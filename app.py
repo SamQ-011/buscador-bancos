@@ -103,7 +103,7 @@ st.markdown("<br>", unsafe_allow_html=True) # Espacio
 
 # Título y Buscador
 st.markdown("## 🔍 Búsqueda de Alias Bancarios")
-busqueda = st.text_input("", placeholder="Escribe la abreviación aquí (ej: TBOM, AMEX)...", label_visibility="collapsed")
+busqueda = st.text_input("", placeholder="Escribe la abreviación aquí (ej: TBOM, AMEX)...", label_visibility="collapsed").strip()
 
 # 6. LÓGICA DE BÚSQUEDA
 if busqueda:
@@ -144,3 +144,4 @@ elif df.empty:
     st.error("⚠️ Error Crítico: No se pudo cargar 'datos.csv'. Revisa que el archivo esté en GitHub.")
 else:
     st.info("👋 **Hola Agente.** Escribe arriba para comenzar.")
+
