@@ -1,6 +1,6 @@
 [theme]
-base = "dark"
-primaryColor = "#4A90E2"
-backgroundColor = "#0E1117"
-secondaryBackgroundColor = "#1E1E1E"
-textColor = "#FAFAFA"
+primaryColor = "#4A90E2"       # Un azul acero elegante para los acentos
+backgroundColor = "#0E1117"    # Fondo casi negro (muy pro)
+secondaryBackgroundColor = "#161B22" # Fondo de los inputs/tablas
+textColor = "#FAFAFA"          # Texto blanco suave
+font = "sans serif"            # Fuente limpia
