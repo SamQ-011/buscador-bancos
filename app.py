@@ -1,33 +1,47 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta 
 
-# IMPORTAMOS TUS PÁGINAS COMO SI FUERAN LIBRERÍAS
-# (Asegúrate de que la carpeta se llame 'vistas' y los archivos tengan estos nombres)
-# Nota: Python no ama los emojis en nombres de archivo al importar, 
-# si te da error, renombra los archivos a 'notas.py' y 'updates.py' en la carpeta.
+# IMPORTAMOS TUS PÁGINAS
 from vistas import notas, updates 
 
 # 1. CONFIGURACIÓN
 st.set_page_config(page_title="Panel Agente", page_icon="🏢", layout="wide")
 
-# 2. CSS (Tu estilo oscuro corregido)
+# 2. CSS (AQUÍ ESTÁ EL CAMBIO DE COLOR)
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    /* header {visibility: hidden;} <--- LO DEJAMOS VISIBLE PARA PODER ABRIR EL MENU */
     
+    /* MODIFICADO: Color #262730 para que coincida con la Barra Lateral */
     .stTextInput > div > div > input {
-        background-color: #1E1E1E; color: white; border: 1px solid #333; border-radius: 10px; padding: 10px;
+        background-color: #262730; 
+        color: white; 
+        border: 1px solid #464B5C; /* Borde sutil para resaltar */
+        border-radius: 10px; 
+        padding: 10px;
     }
+    
+    /* MODIFICADO: Color #262730 para las Tarjetas de Arriba */
     div[data-testid="stMetric"] {
-        background-color: #1E1E1E; border: 1px solid #333; border-radius: 10px; color: white;
+        background-color: #262730; 
+        border: 1px solid #464B5C; 
+        border-radius: 10px; 
+        color: white;
+        text-align: center;
+        padding: 10px;
+    }
+    
+    /* Centrar etiqueta pequeña */
+    div[data-testid="stMetricLabel"] > div {
+        justify-content: center;
+        color: #A0A0A0; /* Texto un poco más claro */
     }
 </style>
 """, unsafe_allow_html=True)
 
-# 3. CARGA DE DATOS (Solo necesaria para el buscador)
+# 3. FUNCIONES
 @st.cache_data
 def cargar_datos():
     try:
@@ -47,38 +61,72 @@ def cargar_datos():
     except Exception:
         return pd.DataFrame()
 
+def sumar_dias_habiles(fecha_inicio, dias_a_sumar):
+    dias_agregados = 0
+    fecha_actual = fecha_inicio
+    if dias_a_sumar <= 0: return fecha_actual
+    
+    while dias_agregados < dias_a_sumar:
+        fecha_actual += timedelta(days=1)
+        if fecha_actual.weekday() < 5: 
+            dias_agregados += 1
+    return fecha_actual
+
 df = cargar_datos()
 
 # ============================================
-# 4. LA BARRA LATERAL (TU MENÚ FAVORITO)
+# 4. LA BARRA LATERAL
 # ============================================
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/9198/9198334.png", width=50)
     st.title("Menú Principal")
     
-    # ¡AQUÍ ESTÁ EL RADIO BUTTON QUE TE GUSTA!
     seleccion = st.radio(
         "Ir a:", 
         ["🔍 Buscador", "📝 Notas CRM", "🔔 Noticias"],
-        index=0 # Por defecto arranca en el primero
+        index=0 
     )
     
     st.markdown("---")
-    st.caption("v5.0 - Custom UI")
+    st.caption("v5.2 - Color Match")
 
 # ============================================
-# 5. EL CEREBRO (MUESTRA LO QUE ELIGIERON)
+# 5. LÓGICA PRINCIPAL
 # ============================================
 
 if seleccion == "🔍 Buscador":
-    # --- CÓDIGO DEL BUSCADOR DIRECTO AQUÍ ---
     st.title("🔍 Buscador de Acreedores")
 
-    if not df.empty:
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Total Acreedores", len(df))
-        with c2: st.metric("Sistema", "Online", delta_color="normal")
-        with c3: st.metric("Fecha", datetime.now().strftime("%d/%m/%Y"))
+    # CÁLCULOS
+    hoy = datetime.now()
+    f_min_std = sumar_dias_habiles(hoy, 3) 
+    f_min_ca = sumar_dias_habiles(hoy, 5)  
+    f_max = hoy + timedelta(days=35)       
+
+    # TARJETAS (Ahora combinarán con el sidebar)
+    c1, c2, c3 = st.columns(3)
+    
+    with c1: 
+        if not df.empty:
+            st.metric("Total Acreedores", len(df), "Base Activa")
+        else:
+            st.metric("Total Acreedores", 0)
+            
+    with c2: 
+        st.metric(
+            label="📅 1er Pago Mínimo (3 Business Days)", 
+            value=f_min_std.strftime("%m/%d/%Y"), 
+            delta=f"California (5 Business Days): {f_min_ca.strftime('%m/%d/%Y')}",
+            delta_color="off"
+        )
+        
+    with c3: 
+        st.metric(
+            label="⛔ Fecha Límite 1er Pago (Max 35 Días)", 
+            value=f_max.strftime("%m/%d/%Y"), 
+            delta="Días Calendario",
+            delta_color="inverse"
+        )
 
     st.markdown("---")
 
@@ -96,9 +144,7 @@ if seleccion == "🔍 Buscador":
             st.warning(f"Sin resultados para: **'{busqueda}'**")
 
 elif seleccion == "📝 Notas CRM":
-    # LLAMAMOS AL ARCHIVO DE NOTAS
     notas.show()
 
 elif seleccion == "🔔 Noticias":
-    # LLAMAMOS AL ARCHIVO DE UPDATES
     updates.show()
