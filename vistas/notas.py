@@ -4,7 +4,11 @@ def show():
     st.title("📝 Generador de Notas")
     st.markdown("---")
 
-    # 1. SELECCIÓN DE RESULTADO
+    # --- 0. GESTIÓN DE MEMORIA (Persistencia) ---
+    if "nota_generada" not in st.session_state:
+        st.session_state.nota_generada = ""
+
+    # --- 1. SELECCIÓN DE RESULTADO ---
     resultado = st.radio(
         "Resultado:", 
         ["Completed", "Not Completed"], 
@@ -16,7 +20,8 @@ def show():
     with col1:
         cliente = st.text_input("Cx Name (Nombre)")
     with col2:
-        cordoba_id = st.text_input("Cordoba ID")
+        # El agente puede pegar lo que sea aquí, nosotros lo limpiamos después
+        cordoba_id = st.text_input("Cordoba ID (Solo números o con texto)")
     with col3:
         affiliate = st.text_input("Affiliate (Nombre de la empresa)")
 
@@ -26,12 +31,13 @@ def show():
     transfer = "Not Successful"
     return_call = "No"
 
-    # 2. CAMPOS EXTRA SI NO SE COMPLETÓ
+    # --- 2. CAMPOS EXTRA SI NO SE COMPLETÓ ---
     if resultado == "Not Completed":
         st.markdown("---")
         st.markdown("### ⚠️ Detalles")
         
-        reason = st.text_input("Reason (Razón específica)")
+        # CAMBIO 1: Text Area para permitir múltiples líneas y listas de deudas
+        reason = st.text_area("Reason (Permite múltiples líneas)", height=100)
         
         opciones_script = [
             "All info provided", "No info provided", "the text message of the VCF", "the contact info verification", "the banking info verification", 
@@ -50,37 +56,43 @@ def show():
 
     st.markdown("---")
 
-    # 3. BOTÓN Y GENERACIÓN
+    # --- 3. BOTÓN Y GENERACIÓN ---
     if st.button("Generar Nota CRM", type="primary"):
         
+        # CAMBIO 2: LIMPIEZA AUTOMÁTICA DEL ID
+        # Esta línea mágica elimina letras, guiones y espacios. Deja solo números.
+        # Ejemplo: "CORDOBA-12345" -> "12345"
+        id_numerico = ''.join(filter(str.isdigit, cordoba_id))
+        
+        # Si el usuario no puso nada, dejamos un aviso
+        if not id_numerico:
+            id_numerico = "MISSING_ID"
+
         # LÓGICA DE FORMATO
         if resultado == "Completed":
+            # Usamos id_numerico en lugar de cordoba_id
             nota_final = f"""✅ WC Completed
-CX: {cliente} CORDOBA-{cordoba_id}
+CX: {cliente} CORDOBA-{id_numerico}
 Affiliate: {affiliate}"""
 
         else:
-            # Lógica Título
             status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
             
             nota_final = f"""❌ WC Not Completed – {status_titulo}
-CX: {cliente} CORDOBA-{cordoba_id}
+CX: {cliente} CORDOBA-{id_numerico}
 • Reason: {reason}
 • Call Progress: {script_stage}
 • Transfer Status: {transfer}.
 Affiliate: {affiliate}"""
 
-        # --- EL TRUCO ESTÁ AQUÍ ---
-        # Guardamos el resultado en la llave especial que usa la caja de texto
+        # Guardamos en memoria
         st.session_state.contenido_nota = nota_final
 
-    # 4. MOSTRAR EL RESULTADO (EDITABLE)
-    # Si la llave "contenido_nota" aún no existe en memoria, la creamos vacía
+    # --- 4. MOSTRAR RESULTADO (EDITABLE) ---
     if "contenido_nota" not in st.session_state:
         st.session_state.contenido_nota = ""
 
-    st.success("Nota generada (Puedes editarla antes de copiar):")
-    
-    # Al usar key="contenido_nota", esta caja muestra lo que hay en memoria
-    # Y si tú escribes en ella, actualiza la memoria sin borrarse.
-    st.text_area("Copia y pega:", key="contenido_nota", height=220)
+    if st.session_state.contenido_nota:
+        st.success("Nota generada (Editable):")
+        st.text_area("Copia y pega:", key="contenido_nota", height=250)
+
