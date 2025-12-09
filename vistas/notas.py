@@ -50,7 +50,7 @@ def show():
         
         c3, c4 = st.columns(2)
         with c3:
-            transfer = st.radio("Transfer Status:", ["Successful", "Not Successful"], horizontal=True)
+            transfer = st.radio("Transfer Status:", ["Successful", "Unsuccessful"], horizontal=True)
         with c4:
             return_call = st.radio("Return?", ["Yes", "No"], horizontal=True)
 
@@ -95,4 +95,5 @@ Affiliate: {affiliate}"""
     if st.session_state.contenido_nota:
         st.success("Nota generada (Editable):")
         st.text_area("Copia y pega:", key="contenido_nota", height=250)
+
 
