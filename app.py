@@ -99,8 +99,8 @@ if seleccion == "🔍 Buscador":
 
     # CÁLCULOS
     hoy = datetime.now()
-    f_min_std = sumar_dias_habiles(hoy, 3) 
-    f_min_ca = sumar_dias_habiles(hoy, 5)  
+    f_min_std = sumar_dias_habiles(hoy, 2) 
+    f_min_ca = sumar_dias_habiles(hoy, 4)  
     f_max = hoy + timedelta(days=35)       
 
     # TARJETAS (Ahora combinarán con el sidebar)
