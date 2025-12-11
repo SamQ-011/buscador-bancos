@@ -1,11 +1,18 @@
 import streamlit as st
 
 def show():
-    st.title("📝 Generador de Notas 2.0")
+    st.title("📝 Generador de Notas")
 
-    # --- GESTIÓN DE MEMORIA ---
-    if "nota_generada" not in st.session_state:
-        st.session_state.nota_generada = ""
+    # --- GESTIÓN DE MEMORIA (INDEPENDIENTE PARA CADA PESTAÑA) ---
+    # Esto asegura que lo que escribas en una pestaña no borre lo de la otra
+    if "nota_completed" not in st.session_state:
+        st.session_state.nota_completed = ""
+    
+    if "nota_not_completed" not in st.session_state:
+        st.session_state.nota_not_completed = ""
+        
+    if "nota_third_party" not in st.session_state:
+        st.session_state.nota_third_party = ""
 
     # --- PESTAÑAS ---
     tab_completed, tab_not_completed, tab_third_party = st.tabs([
@@ -18,7 +25,6 @@ def show():
     # PESTAÑA 1: COMPLETED (DIVIDIDA)
     # ==========================================
     with tab_completed:
-        # Creamos 2 columnas: Izquierda (Inputs) | Derecha (Resultado)
         c_izq, c_der = st.columns([1, 1])
         
         with c_izq:
@@ -28,17 +34,23 @@ def show():
             c_aff = st.text_input("Affiliate", key="c_aff")
             
             st.markdown("---")
+            
+            # BOTÓN COMPLETED
             if st.button("Generar Nota COMPLETED", type="primary", key="btn_comp"):
                 id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
-                nota_final = f"""✅ WC Completed
+                
+                texto_generado = f"""✅ WC Completed
 CX: {c_name} CORDOBA-{id_clean}
 Affiliate: {c_aff}"""
-                st.session_state.nota_generada = nota_final
+                
+                # Guardamos en su memoria específica y recargamos
+                st.session_state.nota_completed = texto_generado
+                st.rerun()
 
         with c_der:
             st.subheader("📋 Resultado")
-            # Mostramos la nota que está en memoria
-            st.text_area("Copia aquí:", value=st.session_state.nota_generada, height=300, key="txt_comp")
+            # Vinculamos esta caja SOLO a 'nota_completed'
+            st.text_area("Copia aquí:", key="nota_completed", height=300)
 
 
     # ==========================================
@@ -48,7 +60,7 @@ Affiliate: {c_aff}"""
         nc_izq, nc_der = st.columns([1, 1])
         
         with nc_izq:
-            st.subheader("📝 Datos & Fallo")
+            st.subheader("📝 Datos")
             nc_name = st.text_input("Cx Name", key="nc_name")
             nc_id = st.text_input("Cordoba ID", key="nc_id")
             nc_aff = st.text_input("Affiliate", key="nc_aff")
@@ -75,6 +87,8 @@ Affiliate: {c_aff}"""
                 return_call = st.radio("Return Call?", ["Yes", "No"], horizontal=True, key="nc_ret")
 
             st.markdown("---")
+            
+            # BOTÓN NOT COMPLETED
             if st.button("Generar Nota NOT COMPLETED", type="primary", key="btn_not"):
                 id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
                 status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
@@ -83,17 +97,21 @@ Affiliate: {c_aff}"""
                 if transfer == "Unsuccessful":
                     texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
 
-                nota_final = f"""❌ WC Not Completed – {status_titulo}
+                texto_generado = f"""❌ WC Not Completed – {status_titulo}
 CX: {nc_name} CORDOBA-{id_clean}
 • Reason: {reason}
 • Call Progress: {script_stage}
 • Transfer Status: {texto_transfer}
 Affiliate: {nc_aff}"""
-                st.session_state.nota_generada = nota_final
+                
+                # Guardamos en su memoria específica y recargamos
+                st.session_state.nota_not_completed = texto_generado
+                st.rerun()
 
         with nc_der:
             st.subheader("📋 Resultado")
-            st.text_area("Copia aquí:", value=st.session_state.nota_generada, height=600, key="txt_not")
+            # Vinculamos esta caja SOLO a 'nota_not_completed'
+            st.text_area("Copia aquí:", key="nota_not_completed", height=600)
 
 
     # ==========================================
@@ -105,12 +123,10 @@ Affiliate: {nc_aff}"""
         with tp_izq:
             st.subheader("👥 Personas Presentes")
             
-            # 1. Cantidad
             num_terceros = st.number_input("Cantidad de personas extra:", min_value=1, value=1, step=1)
             
             lista_terceros = [] 
             
-            # 2. Bucle de campos
             for i in range(num_terceros):
                 st.markdown(f"**Persona {i+1}**")
                 c_p1, c_p2 = st.columns(2)
@@ -121,9 +137,10 @@ Affiliate: {nc_aff}"""
                 lista_terceros.append({'nombre': nom, 'relacion': rel})
 
             st.markdown("---")
-            if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
+            
+            # BOTÓN THIRD PARTY
+            if st.button("Generar Third Party", type="primary", key="btn_tp"):
                 
-                # Lógica Singular/Plural
                 if num_terceros == 1:
                     nombre_p = lista_terceros[0]['nombre']
                     relacion_p = lista_terceros[0]['relacion']
@@ -133,12 +150,15 @@ Affiliate: {nc_aff}"""
                     relaciones = ", ".join([p['relacion'] for p in lista_terceros])
                     parrafo_legal = f"During the WC, {nombres} were present on the call. These persons are the {relaciones} of the client, and their participation was authorized by the client."
 
-                st.session_state.nota_generada = parrafo_legal
+                # Guardamos en su memoria específica y recargamos
+                st.session_state.nota_third_party = parrafo_legal
+                st.rerun()
 
         with tp_der:
-            st.subheader("⚖️ Texto Legal")
-            st.info("Copia este párrafo y pégalo donde lo necesites.")
-            st.text_area("Resultado:", value=st.session_state.nota_generada, height=300, key="txt_tp")
+            st.subheader("⚖️ Third party")
+            
+            # Vinculamos esta caja SOLO a 'nota_third_party'
+            st.text_area("Nota:", key="nota_third_party", height=300)
 
 if __name__ == "__main__":
     show()
