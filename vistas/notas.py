@@ -15,42 +15,45 @@ def show():
     ])
 
     # ==========================================
-    # PESTAÑA 1: COMPLETED
+    # PESTAÑA 1: COMPLETED (DIVIDIDA)
     # ==========================================
     with tab_completed:
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.subheader("Datos del Cliente")
+        # Creamos 2 columnas: Izquierda (Inputs) | Derecha (Resultado)
+        c_izq, c_der = st.columns([1, 1])
+        
+        with c_izq:
+            st.subheader("📝 Datos")
             c_name = st.text_input("Cx Name", key="c_name")
             c_id = st.text_input("Cordoba ID", key="c_id")
             c_aff = st.text_input("Affiliate", key="c_aff")
-        
-        with c2:
-            st.info("Nota rápida para ventas exitosas.")
-            st.markdown("Presiona generar abajo.")
-
-        if st.button("Generar Nota COMPLETED", type="primary", key="btn_comp"):
-            id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
-            nota_final = f"""✅ WC Completed
+            
+            st.markdown("---")
+            if st.button("Generar Nota COMPLETED", type="primary", key="btn_comp"):
+                id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
+                nota_final = f"""✅ WC Completed
 CX: {c_name} CORDOBA-{id_clean}
 Affiliate: {c_aff}"""
-            st.session_state.nota_generada = nota_final
+                st.session_state.nota_generada = nota_final
+
+        with c_der:
+            st.subheader("📋 Resultado")
+            # Mostramos la nota que está en memoria
+            st.text_area("Copia aquí:", value=st.session_state.nota_generada, height=300, key="txt_comp")
 
 
     # ==========================================
-    # PESTAÑA 2: NOT COMPLETED
+    # PESTAÑA 2: NOT COMPLETED (DIVIDIDA)
     # ==========================================
     with tab_not_completed:
-        nc1, nc2 = st.columns([1, 1.5])
+        nc_izq, nc_der = st.columns([1, 1])
         
-        with nc1:
-            st.subheader("Datos del Cliente")
+        with nc_izq:
+            st.subheader("📝 Datos & Fallo")
             nc_name = st.text_input("Cx Name", key="nc_name")
             nc_id = st.text_input("Cordoba ID", key="nc_id")
             nc_aff = st.text_input("Affiliate", key="nc_aff")
-
-        with nc2:
-            st.subheader("Detalles")
+            
+            st.markdown("---")
             reason = st.text_area("Reason", height=100, key="nc_reason")
             
             opciones_script = [
@@ -66,82 +69,76 @@ Affiliate: {c_aff}"""
             with col_a:
                 transfer = st.radio("Transfer Status:", ["Successful", "Unsuccessful"], horizontal=True, key="nc_trans")
                 if transfer == "Unsuccessful":
-                    st.markdown("🔻 **¿Por qué falló?**")
-                    transfer_fail_reason = st.selectbox("Razón fallo:", ["Voicemail", "Line Busy/Disconnected", "Language Barrier", "Refused Transfer", "Gatekeeper Block", "Hold Time Exceeded"])
+                    transfer_fail_reason = st.selectbox("Razón:", ["Voicemail", "Line Busy", "Refused", "Gatekeeper", "Hold Time"])
             
             with col_b:
                 return_call = st.radio("Return Call?", ["Yes", "No"], horizontal=True, key="nc_ret")
 
-        if st.button("Generar Nota NOT COMPLETED", type="primary", key="btn_not"):
-            id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
-            status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
-            
-            texto_transfer = transfer
-            if transfer == "Unsuccessful":
-                texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
+            st.markdown("---")
+            if st.button("Generar Nota NOT COMPLETED", type="primary", key="btn_not"):
+                id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
+                status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
+                
+                texto_transfer = transfer
+                if transfer == "Unsuccessful":
+                    texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
 
-            nota_final = f"""❌ WC Not Completed – {status_titulo}
+                nota_final = f"""❌ WC Not Completed – {status_titulo}
 CX: {nc_name} CORDOBA-{id_clean}
 • Reason: {reason}
 • Call Progress: {script_stage}
 • Transfer Status: {texto_transfer}
 Affiliate: {nc_aff}"""
-            st.session_state.nota_generada = nota_final
+                st.session_state.nota_generada = nota_final
+
+        with nc_der:
+            st.subheader("📋 Resultado")
+            st.text_area("Copia aquí:", value=st.session_state.nota_generada, height=600, key="txt_not")
 
 
     # ==========================================
-    # PESTAÑA 3: THIRD PARTY (SOLO TEXTO LEGAL)
+    # PESTAÑA 3: THIRD PARTY (DIVIDIDA)
     # ==========================================
     with tab_third_party:
-        st.subheader("👥 Generador de Texto Legal")
-        st.markdown("Agrega las personas presentes para generar el párrafo de autorización.")
+        tp_izq, tp_der = st.columns([1, 1])
         
-        # 1. Cantidad de personas
-        num_terceros = st.number_input("Cantidad de personas extra:", min_value=1, value=1, step=1)
-        
-        lista_terceros = [] 
-        
-        # 2. Bucle para generar cajones
-        for i in range(num_terceros):
-            c_p1, c_p2 = st.columns(2)
-            with c_p1:
-                nom = st.text_input(f"Nombre Persona {i+1}", key=f"p_nom_{i}")
-            with c_p2:
-                rel = st.text_input(f"Relación (Mother, Son...) {i+1}", key=f"p_rel_{i}")
-            lista_terceros.append({'nombre': nom, 'relacion': rel})
-
-        st.markdown("---")
-
-        if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
+        with tp_izq:
+            st.subheader("👥 Personas Presentes")
             
-            # A. Singular
-            if num_terceros == 1:
-                nombre_p = lista_terceros[0]['nombre']
-                relacion_p = lista_terceros[0]['relacion']
-                
-                parrafo_legal = f"During the WC, {nombre_p} was present on the call. This person is the {relacion_p} of the client, and their participation was authorized by the client."
+            # 1. Cantidad
+            num_terceros = st.number_input("Cantidad de personas extra:", min_value=1, value=1, step=1)
             
-            # B. Plural
-            else:
-                nombres = ", ".join([p['nombre'] for p in lista_terceros])
-                relaciones = ", ".join([p['relacion'] for p in lista_terceros])
+            lista_terceros = [] 
+            
+            # 2. Bucle de campos
+            for i in range(num_terceros):
+                st.markdown(f"**Persona {i+1}**")
+                c_p1, c_p2 = st.columns(2)
+                with c_p1:
+                    nom = st.text_input(f"Nombre", key=f"p_nom_{i}")
+                with c_p2:
+                    rel = st.text_input(f"Relación", placeholder="Mother, Son...", key=f"p_rel_{i}")
+                lista_terceros.append({'nombre': nom, 'relacion': rel})
+
+            st.markdown("---")
+            if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
                 
-                parrafo_legal = f"During the WC, {nombres} were present on the call. These persons are the {relaciones} of the client, and their participation was authorized by the client."
+                # Lógica Singular/Plural
+                if num_terceros == 1:
+                    nombre_p = lista_terceros[0]['nombre']
+                    relacion_p = lista_terceros[0]['relacion']
+                    parrafo_legal = f"During the WC, {nombre_p} was present on the call. This person is the {relacion_p} of the client, and their participation was authorized by the client."
+                else:
+                    nombres = ", ".join([p['nombre'] for p in lista_terceros])
+                    relaciones = ", ".join([p['relacion'] for p in lista_terceros])
+                    parrafo_legal = f"During the WC, {nombres} were present on the call. These persons are the {relaciones} of the client, and their participation was authorized by the client."
 
-            # Guardamos SOLO el párrafo
-            st.session_state.nota_generada = parrafo_legal
+                st.session_state.nota_generada = parrafo_legal
 
-
-    # ==========================================
-    # RESULTADO FINAL (EDITABLE)
-    # ==========================================
-    st.markdown("### 📋 Nota Generada")
-    
-    if "nota_generada" not in st.session_state:
-        st.session_state.nota_generada = ""
-
-    # Area de texto editable vinculada a la memoria
-    st.text_area("Copia el texto aquí:", key="nota_generada", height=200)
+        with tp_der:
+            st.subheader("⚖️ Texto Legal")
+            st.info("Copia este párrafo y pégalo donde lo necesites.")
+            st.text_area("Resultado:", value=st.session_state.nota_generada, height=300, key="txt_tp")
 
 if __name__ == "__main__":
     show()
