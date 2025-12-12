@@ -136,9 +136,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-    elif menu == "⚙️ Mi Perfil":
-        perfil.show()
+   
 
-if __name__ == "__main__":
-
-    main()
