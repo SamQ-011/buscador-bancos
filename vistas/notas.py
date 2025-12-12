@@ -218,11 +218,11 @@ Affiliate: {nc_aff}"""
                 if num_terceros == 1:
                     nombre_p = lista_terceros[0]['nombre']
                     relacion_p = lista_terceros[0]['relacion']
-                    parrafo = f"During the WC, {nombre_p} was present on the call. This person is the {relacion_p} of the client, and their participation was authorized by the client."
+                    parrafo = f"Third party: \nThe customer's {relacion_p} {nombre_p}.\nThe customer authorizes his wife to be present during the call."
                 else:
                     nombres = ", ".join([p['nombre'] for p in lista_terceros])
                     relaciones = ", ".join([p['relacion'] for p in lista_terceros])
-                    parrafo = f"During the WC, {nombres} were present on the call. These persons are the {relaciones} of the client, and their participation was authorized by the client."
+                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes his wife to be present during the call."
                 st.session_state.nota_third_party = parrafo
                 st.rerun()
 
