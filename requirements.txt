@@ -1,5 +1,5 @@
 streamlit
 pandas
-openpyxl
-gspread
-oauth2client
+sqlalchemy
+psycopg2-binary
+altair
