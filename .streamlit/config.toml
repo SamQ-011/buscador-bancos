@@ -1,6 +1,9 @@
 [theme]
-primaryColor = "#4A90E2"       # Un azul acero elegante para los acentos
-backgroundColor = "#0E1117"    # Fondo casi negro (muy pro)
-secondaryBackgroundColor = "#161B22" # Fondo de los inputs/tablas
-textColor = "#FAFAFA"          # Texto blanco suave
-font = "sans serif"            # Fuente limpia
+primaryColor = "#0F52BA"    # Azul Zafiro (Profesional y Serio)
+backgroundColor = "#FFFFFF" # Fondo Blanco Limpio
+secondaryBackgroundColor = "#F0F2F6" # Gris muy suave para el menú lateral
+textColor = "#262730"       # Gris oscuro (casi negro) para lectura cómoda
+font = "sans serif"         # Tipografía estándar moderna (tipo Arial/Roboto)
+
+[server]
+runOnSave = true
