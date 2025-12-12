@@ -1,6 +1,6 @@
 import streamlit as st
 
-# Configuración de página (Debe ser la primera línea de código siempre)
+# Configuración de página
 st.set_page_config(
     page_title="Secure Portal", 
     page_icon="🏦", 
@@ -9,18 +9,17 @@ st.set_page_config(
 )
 
 # --- IMPORTAR VISTAS ---
-# Importamos los archivos que creaste en la carpeta vistas
 from vistas import login, inicio, buscador, notas, updates, perfil
 
-# --- CSS GLOBAL (Estilo Corporativo & Limpieza) ---
+# --- CSS GLOBAL CORREGIDO ---
 st.markdown("""
     <style>
-        /* Ocultar marcas de agua de Streamlit */
+        /* Ocultar menú hamburguesa y footer, pero DEJAR LA BARRA SUPERIOR para que funcione la flecha */
         #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
         footer {visibility: hidden;}
+        .stDeployButton {display:none;}
         
-        /* Fondo general gris suave profesional */
+        /* Fondo general */
         .stApp {
             background-color: #F8F9FA;
         }
@@ -30,34 +29,31 @@ st.markdown("""
             background-color: #FFFFFF;
             border-right: 1px solid #E0E0E0;
         }
-        /* --- AÑADIR ESTO AL FINAL DEL STYLE EN main.py --- */
 
-/* Estilo de Tarjeta para las Métricas */
+        /* Estilo de Tarjeta para las Métricas */
         div[data-testid="stMetric"] {
-            background-color: #FFFFFF; /* Fondo blanco */
-            border: 1px solid #E0E0E0; /* Borde gris muy suave */
-            border-radius: 10px;       /* Bordes redondeados */
-            padding: 15px;             /* Espacio interno */
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); /* Sombra suave */
-            transition: transform 0.2s; /* Efecto al pasar el mouse */
+            background-color: #FFFFFF;
+            border: 1px solid #E0E0E0;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            transition: transform 0.2s;
         }
 
-        /* Efecto Hover (se levanta un poquito) */
         div[data-testid="stMetric"]:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 8px rgba(0, 0, 0, 0.1);
         }
 
-        /* Títulos más bonitos */
         h1, h2, h3 {
             font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            color: #1f2937; /* Gris oscuro casi negro */
+            color: #1f2937;
             letter-spacing: -0.5px;
         }    
     </style>
 """, unsafe_allow_html=True)
 
-# --- INICIALIZAR ESTADO DE SESIÓN ---
+# --- INICIALIZAR ESTADO ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "real_name" not in st.session_state:
@@ -74,14 +70,23 @@ def main():
         return
 
     # ==========================================
-    # CASO 2: USUARIO LOGUEADO (DASHBOARD)
+    # CASO 2: USUARIO LOGUEADO
     # ==========================================
+
+    # --- 1. ENCABEZADO SUPERIOR (Siempre visible) ---
+    # Esto va FUERA de la sidebar para que se vea siempre
+    col_h1, col_h2 = st.columns([0.5, 9.5])
+    with col_h1:
+        # Puedes poner un st.image("logo.png") aquí si tienes uno
+        st.write("🏦") 
+    with col_h2:
+        st.markdown("### Secure Portal")
     
-    # --- BARRA LATERAL (SIDEBAR) ---
+    st.divider() # Línea separadora
+
+    # --- 2. BARRA LATERAL (SIDEBAR) ---
     with st.sidebar:
-        # Logo o Ícono
-        st.markdown("<h2 style='text-align: center;'>🏦 Portal</h2>", unsafe_allow_html=True)
-        st.markdown("---")
+        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
         
         # Tarjeta de Usuario
         st.caption("CONECTADO COMO:")
@@ -91,7 +96,7 @@ def main():
         
         # Menú de Navegación
         menu = st.radio(
-            "Ir a:", 
+            "Navegación", 
             [
                 "🏠 Inicio", 
                 "📝 Generador Notas", 
@@ -110,14 +115,12 @@ def main():
             st.session_state.real_name = ""
             st.rerun()
 
-    # --- CUERPO PRINCIPAL ---
-    # Aquí llamamos a los archivos de la carpeta 'vistas' según el menú
-    
+    # --- 3. CONTENIDO PRINCIPAL ---
     if menu == "🏠 Inicio":
         try:
             inicio.show()
         except:
-            st.warning("⚠️ El módulo 'Inicio' aún no tiene código.")
+            st.info("👋 Bienvenido al Dashboard principal")
             
     elif menu == "📝 Generador Notas":
         notas.show()
@@ -132,4 +135,10 @@ def main():
         perfil.show()
 
 if __name__ == "__main__":
+    main()
+    elif menu == "⚙️ Mi Perfil":
+        perfil.show()
+
+if __name__ == "__main__":
+
     main()
