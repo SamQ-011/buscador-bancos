@@ -222,7 +222,7 @@ Affiliate: {nc_aff}"""
                 else:
                     nombres = ", ".join([p['nombre'] for p in lista_terceros])
                     relaciones = ", ".join([p['relacion'] for p in lista_terceros])
-                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes this person to be present during the call."
+                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}.\nThe customer authorizes this person to be present during the call."
                 st.session_state.nota_third_party = parrafo
                 st.rerun()
 
@@ -233,3 +233,4 @@ Affiliate: {nc_aff}"""
 if __name__ == "__main__":
 
     show()
+
