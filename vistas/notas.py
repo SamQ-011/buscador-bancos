@@ -214,35 +214,18 @@ Affiliate: {nc_aff}"""
                 lista_terceros.append({'nombre': nom, 'relacion': rel})
 
             st.markdown("---")
-           if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
-                
-                # 1. Filtramos vacíos y creamos el formato "Relacion: Nombre"
-                entradas = []
-                for p in lista_terceros:
-                    # Solo agregamos si el usuario escribió algo en ambos campos
-                    if p['nombre'].strip() and p['relacion'].strip():
-                        # Creamos el string "Mother: Maria"
-                        entradas.append(f"{p['relacion'].strip()}: {p['nombre'].strip()}")
-
-                # 2. Verificamos si hay datos válidos
-                if entradas:
-                    # Unimos con punto y coma (Opción B) -> "Mother: Maria; Father: Carlos"
-                    texto_personas = "; ".join(entradas)
-
-                    # 3. Lógica para Singular vs Plural en el texto legal de abajo
-                    if len(entradas) > 1:
-                        footer_legal = "The customer authorizes these persons to be present during the call."
-                    else:
-                        footer_legal = "The customer authorizes this person to be present during the call."
-
-                    # 4. Resultado Final
-                    parrafo = f"Authorized Third Parties:\n{texto_personas}.\n\n{footer_legal}"
-                    
-                    # Guardamos y recargamos
-                    st.session_state.nota_third_party = parrafo
-                    st.rerun()
+            if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
+                if num_terceros == 1:
+                    nombre_p = lista_terceros[0]['nombre']
+                    relacion_p = lista_terceros[0]['relacion']
+                    parrafo = f"Third party: \nThe customer's {relacion_p} {nombre_p}.\nThe customer authorizes this person to be present during the call."
                 else:
-                    st.warning("⚠️ Por favor completa el Nombre y la Relación.")
+                    nombres = ", ".join([p['nombre'] for p in lista_terceros])
+                    relaciones = ", ".join([p['relacion'] for p in lista_terceros])
+                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes this person to be present during the call."
+                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}.\nThe customer authorizes this person to be present during the call."
+                st.session_state.nota_third_party = parrafo
+                st.rerun()
 
         with tp_der:
             st.subheader("⚖️ Third party")
@@ -251,5 +234,6 @@ Affiliate: {nc_aff}"""
 if __name__ == "__main__":
 
     show()
+
 
 
