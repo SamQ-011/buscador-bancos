@@ -9,12 +9,13 @@ st.set_page_config(
 )
 
 # --- IMPORTAR VISTAS ---
-from vistas import login, inicio, buscador, notas, updates, perfil
+# Asegúrate de que admin_panel exista en la carpeta vistas
+from vistas import login, inicio, buscador, notas, updates, perfil, admin_panel
 
-# --- CSS GLOBAL CORREGIDO ---
+# --- CSS GLOBAL ---
 st.markdown("""
     <style>
-        /* Ocultar menú hamburguesa y footer, pero DEJAR LA BARRA SUPERIOR para que funcione la flecha */
+        /* Ocultar menú hamburguesa y footer */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         .stDeployButton {display:none;}
@@ -59,7 +60,7 @@ if "logged_in" not in st.session_state:
 if "real_name" not in st.session_state:
     st.session_state.real_name = ""
 if "role" not in st.session_state:
-    st.session_state.role = ""
+    st.session_state.role = "" # Puede ser "admin" o "agent"
 
 def main():
     # ==========================================
@@ -73,37 +74,54 @@ def main():
     # CASO 2: USUARIO LOGUEADO
     # ==========================================
 
-    # --- 1. ENCABEZADO SUPERIOR (Siempre visible) ---
-    # Esto va FUERA de la sidebar para que se vea siempre
+    # --- 1. ENCABEZADO SUPERIOR ---
     col_h1, col_h2 = st.columns([0.5, 9.5])
     with col_h1:
-        # Puedes poner un st.image("logo.png") aquí si tienes uno
         st.write("🏦") 
     with col_h2:
-        st.markdown("### Secure Portal")
+        # Título dinámico opcional según rol
+        titulo_app = "Secure Portal Admin" if st.session_state.role == "Admin" else "Secure Portal"
+        st.markdown(f"### {titulo_app}")
     
-    st.divider() # Línea separadora
+    st.divider()
 
-    # --- 2. BARRA LATERAL (SIDEBAR) ---
+    # --- 2. BARRA LATERAL (SIDEBAR) INTELIGENTE ---
     with st.sidebar:
         st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
         
-        # Tarjeta de Usuario
+        # Tarjeta de Usuario con Badge de Rol
         st.caption("CONECTADO COMO:")
-        st.info(f"👤 **{st.session_state.real_name}**")
+        
+        # Mostramos un icono diferente si es admin
+        icono_user = "👮‍♂️" if st.session_state.role == "Admin" else "👤"
+        st.info(f"{icono_user} **{st.session_state.real_name}**")
         
         st.markdown("---")
         
-        # Menú de Navegación
-        menu = st.radio(
-            "Navegación", 
-            [
+        # --- LÓGICA DE MENÚ SEGÚN ROL ---
+        # Aquí definimos qué opciones ve cada quién
+        if st.session_state.role == "Admin":
+            opciones_menu = [
+                "🎛️ Panel Admin",     # <--- Home exclusiva de Admin
+                "📝 Generador Notas",
+                "🔍 Buscar Bancos",
+                # El admin gestiona noticias en el panel, no necesita leerlas aquí
+                "⚙️ Mi Perfil"
+            ]
+        else:
+            # Menú estándar para Agentes
+            opciones_menu = [
                 "🏠 Inicio", 
                 "📝 Generador Notas", 
                 "🔍 Buscar Bancos", 
                 "🔔 Noticias",
                 "⚙️ Mi Perfil" 
-            ],
+            ]
+
+        # Renderizar el menú
+        menu = st.radio(
+            "Navegación", 
+            opciones_menu,
             label_visibility="collapsed"
         )
         
@@ -113,15 +131,23 @@ def main():
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.real_name = ""
+            st.session_state.role = ""
             st.rerun()
 
-    # --- 3. CONTENIDO PRINCIPAL ---
-    if menu == "🏠 Inicio":
-        try:
-            inicio.show()
-        except:
-            st.info("👋 Bienvenido al Dashboard principal")
-            
+    # --- 3. RUTEO DE VISTAS ---
+    
+    # Vista Exclusiva Admin
+    if menu == "🎛️ Panel Admin":
+        # Verificación extra de seguridad por si alguien fuerza la variable menu
+        if st.session_state.role == "Admin":
+            admin_panel.show()
+        else:
+            st.error("⛔ Acceso Denegado")
+
+    # Vistas Comunes / Agente
+    elif menu == "🏠 Inicio":
+        inicio.show()
+        
     elif menu == "📝 Generador Notas":
         notas.show()
         
@@ -136,5 +162,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-   
-

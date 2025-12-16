@@ -94,83 +94,110 @@ def show():
     # PESTAÑA 2: NOT COMPLETED (CONSTRUCTOR INTELIGENTE)
     # ==========================================
     with tab_not_completed:
-        nc_izq, nc_der = st.columns([1, 1])
+        # Usamos columnas con proporción 2:1 para dar más espacio a los inputs
+        nc_izq, nc_der = st.columns([2, 1])
         
         with nc_izq:
-            st.subheader("📝 Datos & Fallo")
-            nc_name = st.text_input("Cx Name", key="nc_name")
-            nc_id = st.text_input("Cordoba ID", key="nc_id")
-            nc_aff = st.text_input("Affiliate", key="nc_aff")
+            st.markdown("##### 👤 Datos del Cliente")
             
-            st.markdown("---")
+            # --- FILA 1: DATOS PERSONALES (Horizontal) ---
+            col1, col2, col3 = st.columns([2, 1, 1]) 
+            with col1:
+                nc_name = st.text_input("Cx Name", key="nc_name")
+            with col2:
+                nc_id = st.text_input("Cordoba ID", key="nc_id")
+            with col3:
+                nc_aff = st.text_input("Affiliate", key="nc_aff")
+
+            st.markdown("##### 📞 Logística de la Llamada")
+
+            # --- FILA 2: DATOS DE LA LLAMADA (Horizontal) ---
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                opciones_script = [
+                    "All info provided", "No info provided", "the text message of the VCF", 
+                    "the contact info verification", "the banking info verification", 
+                    "the enrollment plan verification", "the Yes/No verification questions", 
+                    "the creditors verification", "the right of offset",
+                    "1st agreement (settlement)", "2nd agreement (credit affected)", 
+                    "3rd agreement (not gov program)", "4th agreement (lawsuit)", 
+                    "5th agreement (not loan)", "recent statements request",
+                    "harassing calls info", "additional legal services info"
+                ]
+                script_stage = st.selectbox("Call Progress:", opciones_script, key="nc_script")
             
-            # --- CONSTRUCTOR DE RAZONES (La Magia) ---
-            with st.expander("🛠️ Razones prediseñadas (Click para abrir)", expanded=False):
-                # 1. Selector de Categoría
-                cat_select = st.selectbox("Categoría:", list(REASON_OPTIONS.keys()))
+            with col5:
+                # Usamos radio horizontal para ahorrar clics (un clic es más rápido que abrir selectbox)
+                transfer = st.radio("Transfer Status:", ["Successful", "Unsuccessful"], horizontal=True, key="nc_trans")
+                if transfer == "Unsuccessful":
+                    transfer_fail_reason = st.selectbox("Razón Fallo:", ["Voicemail", "Line Busy", "Refused", "Gatekeeper", "Hold Time"], label_visibility="collapsed")
+            
+            with col6:
+                return_call = st.radio("Return Call?", ["Yes", "No"], horizontal=True, key="nc_ret")
+
+            st.divider() # Línea visual suave
+
+            # --- FILA 3: LA RAZÓN (El Constructor) ---
+            st.markdown("##### 📝 Razón del 'Not Completed'")
+            
+            # CONSTRUCTOR (Dentro de un contenedor para darle orden visual)
+            with st.container(border=True):
+                # 1. Selector de Categoría y Frase en una línea
+                rc_1, rc_2 = st.columns([1, 2])
+                with rc_1:
+                    cat_select = st.selectbox("Categoría:", list(REASON_OPTIONS.keys()), label_visibility="collapsed")
+                with rc_2:
+                    frases_cat = REASON_OPTIONS[cat_select]
+                    frase_labels = [f["label"] for f in frases_cat]
+                    frase_select = st.selectbox("Selecciona Razón:", frase_labels, label_visibility="collapsed")
                 
-                # 2. Selector de Frase
-                # Filtramos las opciones según la categoría
-                frases_cat = REASON_OPTIONS[cat_select]
-                frase_labels = [f["label"] for f in frases_cat]
-                frase_select = st.selectbox("Selecciona la razón:", frase_labels)
-                
-                # 3. Encontrar el objeto de datos de la frase seleccionada
+                # Datos de la frase seleccionada
                 frase_data = next(f for f in frases_cat if f["label"] == frase_select)
                 
-                # 4. Generar Inputs dinámicos
-                user_inputs = []
+                # Inputs dinámicos y Botón en la misma fila si es posible
                 if frase_data["inputs"]:
-                    cols = st.columns(len(frase_data["inputs"]))
+                    cols = st.columns(len(frase_data["inputs"]) + 1) # +1 para el botón
+                    user_inputs = []
+                    
+                    # Generar inputs
                     for idx, label in enumerate(frase_data["inputs"]):
                         with cols[idx]:
                             val = st.text_input(label, key=f"input_{frase_select}_{idx}")
                             user_inputs.append(val)
-                
-                # 5. Botón Agregar
-                if st.button("➕ Agregar a la nota"):
-                    # Formatear el texto (inyectar los inputs en los {})
-                    try:
-                        if user_inputs:
-                            texto_a_agregar = frase_data["template"].format(*user_inputs)
-                        else:
-                            texto_a_agregar = frase_data["template"]
-                        
-                        # Agregar al cajón grande (Append)
+                    
+                    # Botón al final de los inputs
+                    with cols[-1]:
+                        st.write("") # Espaciador para alinear verticalmente
+                        st.write("") 
+                        if st.button("➕ Añadir", use_container_width=True):
+                            try:
+                                if all(user_inputs): # Verificar que no estén vacíos
+                                    texto_a_agregar = frase_data["template"].format(*user_inputs)
+                                    if st.session_state.nc_reason:
+                                        st.session_state.nc_reason += "\n" + texto_a_agregar
+                                    else:
+                                        st.session_state.nc_reason = texto_a_agregar
+                                    st.rerun()
+                                else:
+                                    st.toast("⚠️ Faltan datos por llenar")
+                            except IndexError:
+                                pass
+                else:
+                    # Si no hay inputs, botón directo
+                    if st.button(f"➕ Añadir '{frase_select}'"):
+                        texto_a_agregar = frase_data["template"]
                         if st.session_state.nc_reason:
                             st.session_state.nc_reason += "\n" + texto_a_agregar
                         else:
                             st.session_state.nc_reason = texto_a_agregar
                         st.rerun()
-                    except IndexError:
-                        st.error("Por favor llena todos los campos necesarios.")
 
-            # --- FIN CONSTRUCTOR ---
+            # Area de Texto Final (Donde se acumula todo)
+            st.text_area("Texto Final de la Razón (Editable):", key="nc_reason", height=100)
 
-            # El cajón grande de Reason (Vinculado a session_state)
-            st.text_area("Reason (Editable):", key="nc_reason", height=150)
-            
-            opciones_script = [
-            "All info provided", "No info provided", "the text message of the VCF", "the contact info verification", "the banking info verification", 
-            "the enrollment plan verification", "the Yes/No verification questions", "the creditors verification", "the right of offset",
-            "1st agreement (we aren't making payments until we get a settlement)", "2nd agreement (credit could be affected)", "3rd agreement (we aren't a government program)",
-            "4th agreement (client can be sued)", "5th agreement (we aren't loaning you money)", "the part where we ask for the most recent statements, after the agreements.",
-            "the harassing phone calls info", "the additional legal services info, at the end of the call."
-            ]
-            script_stage = st.selectbox("Call Progress:", opciones_script, key="nc_script")
-
-            col_a, col_b = st.columns(2)
-            with col_a:
-                transfer = st.radio("Transfer Status:", ["Successful", "Unsuccessful"], horizontal=True, key="nc_trans")
-                if transfer == "Unsuccessful":
-                    transfer_fail_reason = st.selectbox("Razón:", ["Voicemail", "Line Busy", "Refused", "Gatekeeper", "Hold Time"])
-            
-            with col_b:
-                return_call = st.radio("Return Call?", ["Yes", "No"], horizontal=True, key="nc_ret")
-
+            # --- BOTÓN GENERAR FINAL ---
             st.markdown("---")
-            
-            if st.button("Generar Nota NOT COMPLETED", type="primary", key="btn_not"):
+            if st.button("🚀 Generar Nota Final", type="primary", use_container_width=True, key="btn_not"):
                 id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
                 status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
                 
@@ -178,7 +205,6 @@ def show():
                 if transfer == "Unsuccessful":
                     texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
 
-                # Saltos de línea dobles para el Reason
                 texto = f"""❌ WC Not Completed – {status_titulo}
 CX: {nc_name} CORDOBA-{id_clean}
 
@@ -192,8 +218,10 @@ Affiliate: {nc_aff}"""
                 st.rerun()
 
         with nc_der:
-            st.subheader("📋 Resultado")
-            st.text_area("Copia aquí:", key="nota_not_completed", height=600)
+            st.subheader("📋 Copiar:")
+            st.text_area("Resultado:", key="nota_not_completed", height=550)
+            if st.session_state.nota_not_completed:
+                st.info("👆 Selecciona todo (Ctrl+A) y copia (Ctrl+C)")
 
 
     # ==========================================
@@ -218,12 +246,11 @@ Affiliate: {nc_aff}"""
                 if num_terceros == 1:
                     nombre_p = lista_terceros[0]['nombre']
                     relacion_p = lista_terceros[0]['relacion']
-                    parrafo = f"Third party: \nThe customer's {relacion_p} {nombre_p}.\nThe customer authorizes this person to be present during the call."
+                    parrafo = f"Third party: \nThe customer's {relacion_p} {nombre_p}.\nThe customer authorizes his wife to be present during the call."
                 else:
                     nombres = ", ".join([p['nombre'] for p in lista_terceros])
                     relaciones = ", ".join([p['relacion'] for p in lista_terceros])
-                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes this person to be present during the call."
-                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes this person to be present during the call."
+                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes his wife to be present during the call."
                 st.session_state.nota_third_party = parrafo
                 st.rerun()
 
@@ -232,9 +259,4 @@ Affiliate: {nc_aff}"""
             st.text_area("Nota:", key="nota_third_party", height=300)
 
 if __name__ == "__main__":
-
     show()
-
-
-
-
