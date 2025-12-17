@@ -7,13 +7,11 @@ import re
 def cargar_datos_bancos():
     try:
         conn = st.connection("supabase", type="sql")
-        # Traemos datos. Si la base crece mucho (40k+), esto se optimizará después.
         query = 'SELECT abreviation, name FROM "Creditors" ORDER BY name ASC'
         df = conn.query(query, ttl=3600)
         
         if not df.empty:
             df = df.rename(columns={"abreviation": "Código", "name": "Acreedor"})
-            # LIMPIEZA PREVENTIVA: Eliminamos bancos que no tengan nombre para evitar errores
             df = df.dropna(subset=['Acreedor'])
             df.insert(0, "Tipo", "🏦")
         return df
@@ -35,7 +33,6 @@ def limpiar_linea_texto(linea):
     if match:
         return linea[:match.start()].strip()
     
-    # 3. Si no hay nada raro, devolvemos tal cual
     return linea.strip()
 
 def show():
@@ -61,7 +58,6 @@ def show():
 
         if busqueda:
             if not df_db.empty:
-                # Búsqueda segura con na=False
                 m1 = df_db['Código'].str.contains(busqueda, case=False, na=False)
                 m2 = df_db['Acreedor'].str.contains(busqueda, case=False, na=False)
                 resultados = df_db[m1 | m2]
@@ -100,37 +96,28 @@ def show():
                 for i, linea in enumerate(lineas):
                     linea_clean = linea.strip()
                     
-                    # Saltar cabeceras o líneas vacías
                     if not linea_clean or "Creditor" in linea_clean or "Account" in linea_clean or "Debt Balance" in linea_clean:
                         continue
                     
-                    # Limpiar el nombre
                     nombre_buscado = limpiar_linea_texto(linea_clean)
-                    
-                    if len(nombre_buscado) < 2: continue # Ignorar basura corta
+                    if len(nombre_buscado) < 2: continue 
 
                     if not df_db.empty:
-                        # --- LÓGICA CORREGIDA ---
-                        # 1. Buscamos en CÓDIGO (para encontrar DISCOVERCARD)
+                        # Búsqueda doble (Código o Nombre)
                         m1 = df_db['Código'].str.contains(nombre_buscado, case=False, regex=False, na=False)
-                        # 2. Buscamos en ACREEDOR (para encontrar Capital One)
                         m2 = df_db['Acreedor'].str.contains(nombre_buscado, case=False, regex=False, na=False)
-                        
-                        # Unimos resultados
                         match = df_db[m1 | m2]
                         
                         if not match.empty:
                             mejor_match = match.iloc[0]
+                            # --- AQUÍ CAMBIAMOS LAS COLUMNAS ---
                             encontrados.append({
-                                "Buscaste": nombre_buscado,
-                                "Encontrado en DB": mejor_match['Acreedor'],
-                                "Código": mejor_match['Código'],
-                                "Confidence": "✅"
+                                "Code": mejor_match['Código'],  # Columna 1
+                                "Name": mejor_match['Acreedor'] # Columna 2
                             })
                         else:
                             no_encontrados.append(nombre_buscado)
                     
-                    # Actualizar barra
                     barra.progress((i + 1) / len(lineas))
 
                 # --- MOSTRAR RESULTADOS ---
@@ -140,12 +127,15 @@ def show():
                     if encontrados:
                         st.success(f"✅ {len(encontrados)} Identificados")
                         df_res = pd.DataFrame(encontrados)
+                        
+                        # Mostramos solo Code y Name, limpio
                         st.dataframe(
                             df_res, 
                             hide_index=True, 
                             use_container_width=True,
                             column_config={
-                                "Código": st.column_config.TextColumn("ID", help="Copia este ID para el CRM")
+                                "Code": st.column_config.TextColumn("Code", help="ID para copiar al CRM", width="medium"),
+                                "Name": st.column_config.TextColumn("Name", width="large")
                             }
                         )
                     else:
@@ -164,5 +154,3 @@ def show():
 
 if __name__ == "__main__":
     show()
-
-
