@@ -1,7 +1,8 @@
 import streamlit as st
+from datetime import datetime
+from sqlalchemy import text 
 
 # --- BASE DE DATOS DE RAZONES PREDEFINIDAS ---
-# Aquí configuramos qué frases existen y qué datos piden
 REASON_OPTIONS = {
     "📞 Contact / Transfer Issues": [
         {"label": "Call dropped / No answer", "template": "Call dropped. I tried to call back without answer. Please call the Cx back.", "inputs": []},
@@ -20,7 +21,6 @@ REASON_OPTIONS = {
         {"label": "Routing # Incorrect", "template": "The routing number is incorrect. The correct number is: {}", "inputs": ["Correct Routing #"]},
         {"label": "Unable to verify Bank Info", "template": "The Cx was unable to verify the account number and routing number.", "inputs": []},
         {"label": "Refused Banking Info", "template": "The Cx refused to provide their banking info.", "inputs": []},
-        # Este es especial, tiene 3 inputs y saltos de línea
         {"label": "FULL Banking Correction", "template": "According to the Cx, the banking info should be:\n      Bank: {}\n      Account #: {}\n      Routing #: {}", "inputs": ["Bank Name", "Account #", "Routing #"]},
     ],
     "📅 Program Details (Payments/Dates)": [
@@ -45,20 +45,51 @@ REASON_OPTIONS = {
     ]
 }
 
+# --- FUNCIÓN DE GUARDADO (COMMENTS VACÍO) ---
+def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, affiliate, info_until, client_lang):
+    try:
+        conn = st.connection("supabase", type="sql")
+        now_iso = datetime.now().isoformat()
+        
+        query = """
+            INSERT INTO "Logs" (created_at, agent, customer, cordoba_id, result, comments, affiliate, info_until, client_language)
+            VALUES (:ts, :ag, :cu, :cid, :res, :com, :aff, :info, :lang)
+        """
+        
+        params = {
+            "ts": now_iso,
+            "ag": agent_name,
+            "cu": customer_name,
+            "cid": cordoba_id,
+            "res": result_type,
+            "com": "",  # Vacío
+            "aff": affiliate,
+            "info": info_until,
+            "lang": client_lang
+        }
+        
+        with conn.session as s:
+            s.execute(text(query), params)
+            s.commit()
+            
+        return True
+    except Exception as e:
+        st.error(f"Error guardando log: {e}")
+        return False
+
 def show():
     st.title("📝 Generador de Notas 2.0")
 
-    # --- GESTIÓN DE MEMORIA ---
-    if "nota_completed" not in st.session_state:
-        st.session_state.nota_completed = ""
-    if "nota_not_completed" not in st.session_state:
-        st.session_state.nota_not_completed = ""
-    if "nota_third_party" not in st.session_state:
-        st.session_state.nota_third_party = ""
+    # --- MEMORIA ---
+    if "nota_c_texto" not in st.session_state: st.session_state.nota_c_texto = ""
+    if "nota_nc_texto" not in st.session_state: st.session_state.nota_nc_texto = ""
+    if "nota_tp_texto" not in st.session_state: st.session_state.nota_tp_texto = ""
     
-    # Memoria específica para el cajón de Reason (para que el constructor funcione)
-    if "nc_reason" not in st.session_state:
-        st.session_state.nc_reason = ""
+    # Flags de Estado (Controlan qué caja se muestra)
+    if "comp_saved" not in st.session_state: st.session_state.comp_saved = False
+    if "nc_saved" not in st.session_state: st.session_state.nc_saved = False
+    
+    if "nc_reason" not in st.session_state: st.session_state.nc_reason = ""
 
     # --- PESTAÑAS ---
     tab_completed, tab_not_completed, tab_third_party = st.tabs([
@@ -72,77 +103,125 @@ def show():
     # ==========================================
     with tab_completed:
         c_izq, c_der = st.columns([1, 1])
+        
         with c_izq:
-            st.subheader("📝 Datos")
-            c_name = st.text_input("Cx Name", key="c_name")
-            c_id = st.text_input("Cordoba ID", key="c_id")
-            c_aff = st.text_input("Affiliate", key="c_aff")
+            st.markdown("##### 🟢 Datos de Venta")
+            c1, c2 = st.columns(2)
+            with c1: c_name = st.text_input("Cx Name", key="c_name")
+            with c2: c_id = st.text_input("Cordoba ID", key="c_id")
+            
+            c3, c4 = st.columns(2)
+            with c3: c_aff = st.text_input("Affiliate", key="c_aff")
+            with c4: c_lang = st.selectbox("Language", ["English", "Spanish"], key="c_lang")
+            
             st.markdown("---")
             
-            if st.button("Generar Nota COMPLETED", type="primary", key="btn_comp"):
-                id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
-                texto = f"✅ WC Completed\nCX: {c_name} CORDOBA-{id_clean}\nAffiliate: {c_aff}"
-                st.session_state.nota_completed = texto
-                st.rerun()
+            b_col1, b_col2 = st.columns(2)
+            
+            # BOTÓN 1: VISUALIZAR
+            with b_col1:
+                if st.button("👀 Previsualizar", use_container_width=True, key="vis_comp"):
+                    if c_name and c_id:
+                        id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
+                        texto = f"✅ WC Completed\nCX: {c_name} CORDOBA-{id_clean}\nAffiliate: {c_aff}\nLanguage: {c_lang}"
+                        st.session_state.nota_c_texto = texto
+                        st.session_state.comp_saved = False # Reseteamos para que salga el editable
+                        st.rerun() 
+                    else:
+                        st.toast("⚠️ Faltan datos")
+
+            # BOTÓN 2: GUARDAR
+            with b_col2:
+                # Se habilita solo si hay texto generado
+                habilitado = True if st.session_state.nota_c_texto else False
+                if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_comp", disabled=not habilitado):
+                    id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
+                    exito = guardar_log_supabase(
+                        agent_name=st.session_state.real_name,
+                        customer_name=c_name,
+                        cordoba_id=id_clean,
+                        result_type="Completed",
+                        affiliate=c_aff,
+                        info_until="All info provided",
+                        client_lang=c_lang
+                    )
+                    
+                    if exito:
+                        st.session_state.comp_saved = True # Activa el modo "Copiado"
+                        st.toast("✅ Guardado en BD")
+                        st.rerun()
 
         with c_der:
-            st.subheader("📋 Resultado")
-            st.text_area("Copia aquí:", key="nota_completed", height=300)
+            st.markdown("##### 📋 Nota Final")
+            
+            # --- MAGIA PARA EVITAR DUPLICADOS ---
+            if st.session_state.comp_saved:
+                # MODO "YA GUARDÉ": Mostramos SOLO la caja gris para copiar
+                st.success("✅ Guardado. Copia aquí:")
+                st.code(st.session_state.nota_c_texto, language="text")
+                
+                # Botón pequeño para limpiar
+                if st.button("🔄 Nueva Venta", key="new_c"):
+                    st.session_state.nota_c_texto = ""
+                    st.session_state.comp_saved = False
+                    st.rerun()
+            
+            else:
+                # MODO "EDITANDO": Mostramos SOLO el text area editable
+                if st.session_state.nota_c_texto:
+                    st.text_area(
+                        "Revisa antes de guardar:", 
+                        key="nota_c_texto", # Editamos directo la variable
+                        height=250
+                    )
+                else:
+                    st.info("👈 Llena los datos y pulsa Previsualizar.")
 
 
     # ==========================================
-    # PESTAÑA 2: NOT COMPLETED (CONSTRUCTOR INTELIGENTE)
+    # PESTAÑA 2: NOT COMPLETED
     # ==========================================
     with tab_not_completed:
-        # Usamos columnas con proporción 2:1 para dar más espacio a los inputs
         nc_izq, nc_der = st.columns([2, 1])
         
         with nc_izq:
-            st.markdown("##### 👤 Datos del Cliente")
+            st.markdown("##### 🔴 Datos del Fallo")
             
-            # --- FILA 1: DATOS PERSONALES (Horizontal) ---
-            col1, col2, col3 = st.columns([2, 1, 1]) 
-            with col1:
-                nc_name = st.text_input("Cx Name", key="nc_name")
-            with col2:
-                nc_id = st.text_input("Cordoba ID", key="nc_id")
-            with col3:
-                nc_aff = st.text_input("Affiliate", key="nc_aff")
-
-            st.markdown("##### 📞 Logística de la Llamada")
-
-            # --- FILA 2: DATOS DE LA LLAMADA (Horizontal) ---
-            col4, col5, col6 = st.columns(3)
-            with col4:
-                opciones_script = [
-                    "All info provided", "No info provided", "the text message of the VCF", 
-                    "the contact info verification", "the banking info verification", 
-                    "the enrollment plan verification", "the Yes/No verification questions", 
-                    "the creditors verification", "the right of offset",
-                    "1st agreement (settlement)", "2nd agreement (credit affected)", 
-                    "3rd agreement (not gov program)", "4th agreement (lawsuit)", 
-                    "5th agreement (not loan)", "recent statements request",
-                    "harassing calls info", "additional legal services info"
-                ]
-                script_stage = st.selectbox("Call Progress:", opciones_script, key="nc_script")
+            c1, c2 = st.columns(2) 
+            with c1: nc_name = st.text_input("Cx Name", key="nc_name")
+            with c2: nc_id = st.text_input("Cordoba ID", key="nc_id")
             
-            with col5:
-                # Usamos radio horizontal para ahorrar clics (un clic es más rápido que abrir selectbox)
+            c3, c4 = st.columns(2)
+            with c3: nc_aff = st.text_input("Affiliate", key="nc_aff")
+            with c4: nc_lang = st.selectbox("Language", ["English", "Spanish"], key="nc_lang")
+
+            st.markdown("**Progreso:**")
+            opciones_script = [
+                "All info provided", "No info provided", "the text message of the VCF", 
+                "the contact info verification", "the banking info verification", 
+                "the enrollment plan verification", "the Yes/No verification questions", 
+                "the creditors verification", "the right of offset",
+                "1st agreement (settlement)", "2nd agreement (credit affected)", 
+                "3rd agreement (not gov program)", "4th agreement (lawsuit)", 
+                "5th agreement (not loan)", "recent statements request",
+                "harassing calls info", "additional legal services info"
+            ]
+            script_stage = st.selectbox("Info Until / Progress:", opciones_script, key="nc_script")
+
+            c5, c6 = st.columns(2)
+            with c5:
                 transfer = st.radio("Transfer Status:", ["Successful", "Unsuccessful"], horizontal=True, key="nc_trans")
+                transfer_fail_reason = ""
                 if transfer == "Unsuccessful":
                     transfer_fail_reason = st.selectbox("Razón Fallo:", ["Voicemail", "Line Busy", "Refused", "Gatekeeper", "Hold Time"], label_visibility="collapsed")
             
-            with col6:
+            with c6:
                 return_call = st.radio("Return Call?", ["Yes", "No"], horizontal=True, key="nc_ret")
 
-            st.divider() # Línea visual suave
+            st.divider()
 
-            # --- FILA 3: LA RAZÓN (El Constructor) ---
-            st.markdown("##### 📝 Razón del 'Not Completed'")
-            
-            # CONSTRUCTOR (Dentro de un contenedor para darle orden visual)
+            # --- CONSTRUCTOR ---
             with st.container(border=True):
-                # 1. Selector de Categoría y Frase en una línea
                 rc_1, rc_2 = st.columns([1, 2])
                 with rc_1:
                     cat_select = st.selectbox("Categoría:", list(REASON_OPTIONS.keys()), label_visibility="collapsed")
@@ -151,77 +230,107 @@ def show():
                     frase_labels = [f["label"] for f in frases_cat]
                     frase_select = st.selectbox("Selecciona Razón:", frase_labels, label_visibility="collapsed")
                 
-                # Datos de la frase seleccionada
                 frase_data = next(f for f in frases_cat if f["label"] == frase_select)
                 
-                # Inputs dinámicos y Botón en la misma fila si es posible
                 if frase_data["inputs"]:
-                    cols = st.columns(len(frase_data["inputs"]) + 1) # +1 para el botón
+                    cols = st.columns(len(frase_data["inputs"]) + 1)
                     user_inputs = []
-                    
-                    # Generar inputs
                     for idx, label in enumerate(frase_data["inputs"]):
                         with cols[idx]:
                             val = st.text_input(label, key=f"input_{frase_select}_{idx}")
                             user_inputs.append(val)
                     
-                    # Botón al final de los inputs
                     with cols[-1]:
-                        st.write("") # Espaciador para alinear verticalmente
+                        st.write("")
                         st.write("") 
                         if st.button("➕ Añadir", use_container_width=True):
-                            try:
-                                if all(user_inputs): # Verificar que no estén vacíos
-                                    texto_a_agregar = frase_data["template"].format(*user_inputs)
-                                    if st.session_state.nc_reason:
-                                        st.session_state.nc_reason += "\n" + texto_a_agregar
-                                    else:
-                                        st.session_state.nc_reason = texto_a_agregar
-                                    st.rerun()
-                                else:
-                                    st.toast("⚠️ Faltan datos por llenar")
-                            except IndexError:
-                                pass
+                            if all(user_inputs):
+                                texto_a_agregar = frase_data["template"].format(*user_inputs)
+                                st.session_state.nc_reason += ("\n" + texto_a_agregar) if st.session_state.nc_reason else texto_a_agregar
+                                st.rerun()
+                            else:
+                                st.toast("⚠️ Faltan datos")
                 else:
-                    # Si no hay inputs, botón directo
                     if st.button(f"➕ Añadir '{frase_select}'"):
                         texto_a_agregar = frase_data["template"]
-                        if st.session_state.nc_reason:
-                            st.session_state.nc_reason += "\n" + texto_a_agregar
-                        else:
-                            st.session_state.nc_reason = texto_a_agregar
+                        st.session_state.nc_reason += ("\n" + texto_a_agregar) if st.session_state.nc_reason else texto_a_agregar
                         st.rerun()
 
-            # Area de Texto Final (Donde se acumula todo)
-            st.text_area("Texto Final de la Razón (Editable):", key="nc_reason", height=100)
-
-            # --- BOTÓN GENERAR FINAL ---
+            st.text_area("Razón Final (Constructor):", key="nc_reason", height=100)
             st.markdown("---")
-            if st.button("🚀 Generar Nota Final", type="primary", use_container_width=True, key="btn_not"):
-                id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
-                status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
-                
-                texto_transfer = transfer
-                if transfer == "Unsuccessful":
-                    texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
+            
+            # --- BOTONES ACCIÓN ---
+            nb_col1, nb_col2 = st.columns(2)
 
-                texto = f"""❌ WC Not Completed – {status_titulo}
+            with nb_col1:
+                if st.button("👀 Previsualizar", use_container_width=True, key="vis_nc"):
+                    if nc_name and st.session_state.nc_reason:
+                        id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
+                        status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
+                        
+                        texto_transfer = transfer
+                        if transfer == "Unsuccessful":
+                            texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
+
+                        texto = f"""❌ WC Not Completed – {status_titulo}
 CX: {nc_name} CORDOBA-{id_clean}
 
 • Reason: {st.session_state.nc_reason}
 
 • Call Progress: {script_stage}
 • Transfer Status: {texto_transfer}
-Affiliate: {nc_aff}"""
-                
-                st.session_state.nota_not_completed = texto
-                st.rerun()
+Affiliate: {nc_aff}
+Language: {nc_lang}"""
+                        
+                        st.session_state.nota_nc_texto = texto
+                        st.session_state.nc_saved = False # Mostrar modo edición
+                        st.rerun()
+                    else:
+                        st.toast("⚠️ Falta Nombre o Razón")
+
+            with nb_col2:
+                habilitado_nc = True if st.session_state.nota_nc_texto else False
+                if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_nc", disabled=not habilitado_nc):
+                    id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
+                    status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
+                    
+                    exito = guardar_log_supabase(
+                        agent_name=st.session_state.real_name,
+                        customer_name=nc_name,
+                        cordoba_id=id_clean,
+                        result_type=f"Not Completed - {status_titulo}",
+                        affiliate=nc_aff,
+                        info_until=script_stage,
+                        client_lang=nc_lang
+                    )
+                    
+                    if exito:
+                        st.session_state.nc_saved = True # Cambiar a modo copia
+                        st.toast("💾 Fallo registrado")
+                        st.rerun()
 
         with nc_der:
-            st.subheader("📋 Copiar:")
-            st.text_area("Resultado:", key="nota_not_completed", height=550)
-            if st.session_state.nota_not_completed:
-                st.info("👆 Selecciona todo (Ctrl+A) y copia (Ctrl+C)")
+            st.markdown("##### 📋 Nota Final")
+            
+            # --- MAGIA DE REEMPLAZO ---
+            if st.session_state.nc_saved:
+                st.error("✅ Guardado. Copia aquí:")
+                st.code(st.session_state.nota_nc_texto, language="text")
+                
+                if st.button("🔄 Nuevo Registro", key="new_nc"):
+                    st.session_state.nota_nc_texto = ""
+                    st.session_state.nc_reason = ""
+                    st.session_state.nc_saved = False
+                    st.rerun()
+            else:
+                if st.session_state.nota_nc_texto:
+                    st.text_area(
+                        "Revisa antes de guardar:", 
+                        key="nota_nc_texto",
+                        height=450
+                    )
+                else:
+                    st.info("👈 Construye la razón y pulsa Previsualizar.")
 
 
     # ==========================================
@@ -229,34 +338,53 @@ Affiliate: {nc_aff}"""
     # ==========================================
     with tab_third_party:
         tp_izq, tp_der = st.columns([1, 1])
+        
         with tp_izq:
             st.subheader("👥 Personas Presentes")
-            num_terceros = st.number_input("Cantidad de personas extra:", min_value=1, value=1, step=1)
-            lista_terceros = [] 
-            for i in range(num_terceros):
-                c_p1, c_p2 = st.columns(2)
-                with c_p1:
-                    nom = st.text_input(f"Nombre", key=f"p_nom_{i}")
-                with c_p2:
-                    rel = st.text_input(f"Relación", placeholder="Mother...", key=f"p_rel_{i}")
-                lista_terceros.append({'nombre': nom, 'relacion': rel})
+            
+            with st.container(border=True):
+                num_terceros = st.number_input("Cantidad de personas extra:", min_value=1, value=1, step=1)
+                
+                lista_terceros = [] 
+                for i in range(num_terceros):
+                    st.markdown(f"**Persona #{i+1}**")
+                    c_p1, c_p2 = st.columns(2)
+                    with c_p1:
+                        nom = st.text_input("Nombre", key=f"p_nom_{i}").strip()
+                    with c_p2:
+                        rel = st.text_input("Relación", placeholder="Ej: Father, Wife...", key=f"p_rel_{i}").strip()
+                    
+                    if nom and rel:
+                        lista_terceros.append({'nombre': nom, 'relacion': rel})
 
             st.markdown("---")
+            
             if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
-                if num_terceros == 1:
-                    nombre_p = lista_terceros[0]['nombre']
-                    relacion_p = lista_terceros[0]['relacion']
-                    parrafo = f"Third party: \nThe customer's {relacion_p} {nombre_p}.\nThe customer authorizes his wife to be present during the call."
+                if not lista_terceros:
+                    st.warning("⚠️ Debes llenar los nombres y relaciones.")
                 else:
-                    nombres = ", ".join([p['nombre'] for p in lista_terceros])
-                    relaciones = ", ".join([p['relacion'] for p in lista_terceros])
-                    parrafo = f"Third party: \nThe customer's {relaciones} {nombres}./nThe customer authorizes his wife to be present during the call."
-                st.session_state.nota_third_party = parrafo
-                st.rerun()
+                    personas_fmt = [f"{p['nombre']} Customer's {p['relacion']}" for p in lista_terceros]
+                    texto_personas = ", ".join(personas_fmt)
+
+                    if len(lista_terceros) > 1:
+                        sujeto = "these people"
+                    else:
+                        sujeto = "this person"
+
+                    parrafo = (
+                        f"✅ Third Party Authorization:\n"
+                        f"Third party: {texto_personas}\n"
+                        f"The customer authorizes {sujeto} to be present during the call."
+                    )
+                    
+                    st.session_state.nota_tp_texto = parrafo
+                    st.rerun()
 
         with tp_der:
-            st.subheader("⚖️ Third party")
-            st.text_area("Nota:", key="nota_third_party", height=300)
+            st.subheader("⚖️ Resultado Legal")
+            # Para third party dejamos el code directo porque no se guarda en BD
+            if st.session_state.nota_tp_texto:
+                 st.code(st.session_state.nota_tp_texto, language="text")
 
 if __name__ == "__main__":
     show()
