@@ -106,7 +106,8 @@ def show():
 
                     # Buscamos en la DB (Búsqueda exacta o parcial)
                     # Usamos 'contains' para ser flexibles
-                    match = df_db[df_db['Acreedor'].str.contains(nombre_buscado, case=False, regex=False)]
+                    # Agregamos na=False al final
+                    match = df_db[df_db['Acreedor'].str.contains(nombre_buscado, case=False, regex=False, na=False)]
                     
                     if not match.empty:
                         # Tomamos el primer resultado (o el mejor)
@@ -154,3 +155,4 @@ def show():
 
 if __name__ == "__main__":
     show()
+
