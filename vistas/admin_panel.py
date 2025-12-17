@@ -3,6 +3,7 @@ import pandas as pd
 import altair as alt
 from datetime import datetime
 from supabase import create_client
+import bcrypt
 
 # --- 1. CONEXIÓN A SUPABASE (BLINDADA) ---
 @st.cache_resource
@@ -308,11 +309,13 @@ def show():
                 if st.button("Crear Usuario", type="primary", use_container_width=True):
                     if n_user and n_name and n_pass:
                         try:
-                            # Insertamos en tabla "Users" respetando mayúscula
+                            # --- ENCRIPTAR ---
+                            hashed = bcrypt.hashpw(n_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
                             supabase.table("Users").insert({
                                 "username": n_user,
                                 "name": n_name,
-                                "password": n_pass,
+                                "password": hashed, # <--- ENVIAR HASH
                                 "role": n_role,
                                 "active": True
                             }).execute()
@@ -369,7 +372,9 @@ def show():
                             }
                             # Solo actualizamos pass si escribió algo
                             if e_pass:
-                                update_data["password"] = e_pass
+                                # --- ENCRIPTAR ---
+                                hashed_new = bcrypt.hashpw(e_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                                update_data["password"] = hashed_new
                             
                             try:
                                 supabase.table("Users").update(update_data).eq("id", sel_uid).execute()
@@ -383,4 +388,3 @@ def show():
             except Exception as e:
 
                 st.error(f"Error cargando usuarios: {e}")
-

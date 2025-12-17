@@ -1,6 +1,7 @@
 import streamlit as st
 import time
-from sqlalchemy import text  # <--- IMPORTANTE: Necesitamos esto para SQL
+from sqlalchemy import text 
+import bcrypt
 
 def actualizar_password_supabase(username, nueva_clave):
     try:
@@ -22,13 +23,17 @@ def actualizar_password_supabase(username, nueva_clave):
 def validar_clave_actual(username, clave_ingresada):
     try:
         conn = st.connection("supabase", type="sql")
-        # Query de lectura (esta sí funciona bien con conn.query)
-        query = 'SELECT * FROM "Users" WHERE username = :u AND password = :p'
-        df = conn.query(query, params={"u": username, "p": clave_ingresada}, ttl=0)
-        return not df.empty
+        # 1. Traemos el hash de la BD (NO comparamos en SQL)
+        query = 'SELECT password FROM "Users" WHERE username = :u'
+        df = conn.query(query, params={"u": username}, ttl=0)
+        
+        if not df.empty:
+            hash_db = df.iloc[0]['password']
+            # 2. Comparamos con bcrypt
+            return bcrypt.checkpw(clave_ingresada.encode('utf-8'), hash_db.encode('utf-8'))
+        return False
     except:
         return False
-
 def show():
     st.title("⚙️ Mi Perfil")
     st.caption("Gestiona tu seguridad y preferencias.")
@@ -72,7 +77,10 @@ def show():
                 # Lógica de guardado
                 if validar_clave_actual(st.session_state.username, pass_actual):
                     
-                    if actualizar_password_supabase(st.session_state.username, pass_nueva):
+                    # --- ENCRIPTAR LA NUEVA ---
+                    hashed_new = bcrypt.hashpw(pass_nueva.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+                    if actualizar_password_supabase(st.session_state.username, hashed_new): # Enviamos hash
                         st.success("✅ ¡Contraseña actualizada correctamente!")
                         st.balloons()
                         time.sleep(2)

@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+import bcrypt
 
 def show():
     # --- CSS: Limpieza visual y ajuste vertical ---
@@ -59,33 +60,39 @@ def autenticar_usuario(user_input, pass_input):
         
         # --- CORRECCIÓN 1: Comillas dobles en "Users" ---
         # Al poner "Users" entre comillas dobles, obligamos a SQL a respetar la mayúscula.
-        query = 'SELECT * FROM "Users" WHERE username = :u AND password = :p AND active = TRUE'
-        
-        df = conn.query(query, params={"u": user_input, "p": pass_input}, ttl=0)
+        query = 'SELECT * FROM "Users" WHERE username = :u AND active = TRUE'
+        df = conn.query(query, params={"u": user_input}, ttl=0)
         
         if not df.empty:
             datos_usuario = df.iloc[0]
+            password_hash_db = datos_usuario['password']
             
             # Guardar sesión
-            st.session_state.logged_in = True
-            st.session_state.username = datos_usuario['username']
-            
-            # --- CORRECCIÓN 2: Usar 'name' en lugar de 'real_name' ---
-            # En tu foto se ve que la columna se llama 'name'
-            st.session_state.real_name = datos_usuario['name'] 
-            
-            # Manejo seguro del rol (por si acaso no existe la columna rol, asume 'agente')
-            st.session_state.role = datos_usuario.get('role', 'agente')
-            
-            st.toast(f"✅ ¡Hola de nuevo, {st.session_state.real_name}!", icon="👋")
-            time.sleep(1)
-            st.rerun()
-            
+            try:
+                byte_password = pass_input.encode('utf-8')
+                byte_hash = password_hash_db.encode('utf-8')
+                
+                if bcrypt.checkpw(byte_password, byte_hash):
+                    # --- LOGIN EXITOSO (IGUAL QUE ANTES) ---
+                    st.session_state.logged_in = True
+                    st.session_state.username = datos_usuario['username']
+                    st.session_state.real_name = datos_usuario['name']
+                    st.session_state.role = datos_usuario.get('role', 'Agent') # Default seguro
+                    
+                    st.toast(f"✅ ¡Hola de nuevo, {st.session_state.real_name}!", icon="👋")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("❌ Contraseña incorrecta.")
+            except ValueError:
+                # Esto pasa si en la BD hay alguna contraseña vieja sin encriptar
+                st.error("⚠️ Tu contraseña necesita actualización de seguridad. Contacta al Admin.")
         else:
-            st.error("❌ Acceso denegado. Usuario o contraseña incorrectos.")
+            st.error("❌ Usuario no encontrado.")
             
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        print(e) # Solo para ti en consola
+        st.error("Error de conexión.")
 
 if __name__ == "__main__":
     show()
