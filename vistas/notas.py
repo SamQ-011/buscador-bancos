@@ -1,8 +1,58 @@
 import streamlit as st
+import streamlit.components.v1 as components  # <--- NECESARIO PARA EL BOTÓN JS
 from datetime import datetime
 from sqlalchemy import text 
 
-# --- BASE DE DATOS DE RAZONES PREDEFINIDAS ---
+# --- FUNCIÓN DE BOTÓN DE COPIAR (JS LIMPIO) ---
+def boton_copiar_portapapeles(texto_a_copiar, key_unica):
+    """
+    Botón HTML/JS que copia el texto al portapapeles sin mostrar bloques de código.
+    """
+    if not texto_a_copiar:
+        return
+        
+    # Escapar caracteres para evitar errores de JS
+    texto_seguro = texto_a_copiar.replace("`", "\`").replace("$", "\$").replace("{", "\{").replace("}", "\}")
+    
+    html_code = f"""
+    <script>
+    function copyToClipboard() {{
+        const text = `{texto_seguro}`;
+        navigator.clipboard.writeText(text).then(function() {{
+            const btn = document.getElementById('btn_{key_unica}');
+            btn.innerHTML = '✅ ¡Copiado!';
+            btn.style.backgroundColor = '#d1e7dd';
+            btn.style.borderColor = '#badbcc';
+            setTimeout(() => {{
+                btn.innerHTML = '📋 Copiar Nota';
+                btn.style.backgroundColor = '#f0f2f6';
+                btn.style.borderColor = '#d6d6d8';
+            }}, 2000);
+        }}, function(err) {{
+            console.error('Error al copiar', err);
+        }});
+    }}
+    </script>
+    <button id="btn_{key_unica}" onclick="copyToClipboard()" style="
+        width: 100%;
+        background-color: #f0f2f6;
+        color: #31333F;
+        border: 1px solid #d6d6d8;
+        padding: 0.5rem;
+        border-radius: 8px;
+        cursor: pointer;
+        font-family: sans-serif;
+        font-weight: 600;
+        font-size: 14px;
+        margin-top: 5px;
+        transition: all 0.2s;
+    ">
+        📋 Copiar Nota
+    </button>
+    """
+    components.html(html_code, height=50)
+
+# --- BASE DE DATOS DE RAZONES ---
 REASON_OPTIONS = {
     "📞 Contact / Transfer Issues": [
         {"label": "Call dropped / No answer", "template": "Call dropped. I tried to call back without answer. Please call the Cx back.", "inputs": []},
@@ -45,7 +95,7 @@ REASON_OPTIONS = {
     ]
 }
 
-# --- FUNCIÓN DE GUARDADO (COMMENTS VACÍO) ---
+# --- FUNCIÓN DE GUARDADO ---
 def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, affiliate, info_until, client_lang):
     try:
         conn = st.connection("supabase", type="sql")
@@ -55,23 +105,13 @@ def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, aff
             INSERT INTO "Logs" (created_at, agent, customer, cordoba_id, result, comments, affiliate, info_until, client_language)
             VALUES (:ts, :ag, :cu, :cid, :res, :com, :aff, :info, :lang)
         """
-        
         params = {
-            "ts": now_iso,
-            "ag": agent_name,
-            "cu": customer_name,
-            "cid": cordoba_id,
-            "res": result_type,
-            "com": "",  # Vacío
-            "aff": affiliate,
-            "info": info_until,
-            "lang": client_lang
+            "ts": now_iso, "ag": agent_name, "cu": customer_name, "cid": cordoba_id, "res": result_type,
+            "com": "", "aff": affiliate, "info": info_until, "lang": client_lang
         }
-        
         with conn.session as s:
             s.execute(text(query), params)
             s.commit()
-            
         return True
     except Exception as e:
         st.error(f"Error guardando log: {e}")
@@ -80,15 +120,10 @@ def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, aff
 def show():
     st.title("📝 Generador de Notas 2.0")
 
-    # --- MEMORIA ---
+    # --- MEMORIA (INICIALIZACIÓN) ---
     if "nota_c_texto" not in st.session_state: st.session_state.nota_c_texto = ""
     if "nota_nc_texto" not in st.session_state: st.session_state.nota_nc_texto = ""
     if "nota_tp_texto" not in st.session_state: st.session_state.nota_tp_texto = ""
-    
-    # Flags de Estado (Controlan qué caja se muestra)
-    if "comp_saved" not in st.session_state: st.session_state.comp_saved = False
-    if "nc_saved" not in st.session_state: st.session_state.nc_saved = False
-    
     if "nc_reason" not in st.session_state: st.session_state.nc_reason = ""
 
     # --- PESTAÑAS ---
@@ -118,19 +153,23 @@ def show():
             
             b_col1, b_col2 = st.columns(2)
             
-            # BOTÓN 1: VISUALIZAR
+            # BOTÓN VISUALIZAR
             with b_col1:
                 if st.button("👀 Previsualizar", use_container_width=True, key="vis_comp"):
                     if c_name and c_id:
                         id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
-                        texto = f"✅ WC Completed\nCX: {c_name} CORDOBA-{id_clean}\nAffiliate: {c_aff}\nLanguage: {c_lang}"
+                        texto = f"✅ WC Completed\nCX: {c_name} || CORDOBA-{id_clean}\nAffiliate: {c_aff}"
+                        
+                        # ACTUALIZAMOS LAS VARIABLES
                         st.session_state.nota_c_texto = texto
-                        st.session_state.comp_saved = False # Reseteamos para que salga el editable
+                        # [IMPORTANTE] FORZAMOS EL VALOR DEL WIDGET PARA QUE SE REFRESQUE
+                        st.session_state.area_c_edit = texto 
+                        
                         st.rerun() 
                     else:
                         st.toast("⚠️ Faltan datos")
 
-            # BOTÓN 2: GUARDAR
+            # BOTÓN GUARDAR
             with b_col2:
                 # Se habilita solo si hay texto generado
                 habilitado = True if st.session_state.nota_c_texto else False
@@ -138,44 +177,30 @@ def show():
                     id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
                     exito = guardar_log_supabase(
                         agent_name=st.session_state.real_name,
-                        customer_name=c_name,
-                        cordoba_id=id_clean,
-                        result_type="Completed",
-                        affiliate=c_aff,
-                        info_until="All info provided",
-                        client_lang=c_lang
+                        customer_name=c_name, cordoba_id=id_clean, result_type="Completed",
+                        affiliate=c_aff, info_until="All info provided", client_lang=c_lang
                     )
-                    
                     if exito:
-                        st.session_state.comp_saved = True # Activa el modo "Copiado"
                         st.toast("✅ Guardado en BD")
-                        st.rerun()
 
         with c_der:
             st.markdown("##### 📋 Nota Final")
             
-            # --- MAGIA PARA EVITAR DUPLICADOS ---
-            if st.session_state.comp_saved:
-                # MODO "YA GUARDÉ": Mostramos SOLO la caja gris para copiar
-                st.success("✅ Guardado. Copia aquí:")
-                st.code(st.session_state.nota_c_texto, language="text")
+            # TEXTAREA EDITABLE
+            st.text_area(
+                "Edita y luego copia:", 
+                value=st.session_state.nota_c_texto,
+                height=200,
+                key="area_c_edit", # Esta llave se actualiza forzosamente arriba
+                on_change=lambda: st.session_state.update(nota_c_texto=st.session_state.area_c_edit)
+            )
+
+            # BOTÓN DE COPIAR (Aparece si hay texto)
+            if st.session_state.nota_c_texto:
+                boton_copiar_portapapeles(st.session_state.nota_c_texto, "copy_comp")
                 
-                # Botón pequeño para limpiar
-                if st.button("🔄 Nueva Venta", key="new_c"):
-                    st.session_state.nota_c_texto = ""
-                    st.session_state.comp_saved = False
-                    st.rerun()
-            
-            else:
-                # MODO "EDITANDO": Mostramos SOLO el text area editable
-                if st.session_state.nota_c_texto:
-                    st.text_area(
-                        "Revisa antes de guardar:", 
-                        key="nota_c_texto", # Editamos directo la variable
-                        height=250
-                    )
-                else:
-                    st.info("👈 Llena los datos y pulsa Previsualizar.")
+            if not st.session_state.nota_c_texto:
+                st.info("👈 Llena los datos y pulsa Previsualizar.")
 
 
     # ==========================================
@@ -186,7 +211,6 @@ def show():
         
         with nc_izq:
             st.markdown("##### 🔴 Datos del Fallo")
-            
             c1, c2 = st.columns(2) 
             with c1: nc_name = st.text_input("Cx Name", key="nc_name")
             with c2: nc_id = st.text_input("Cordoba ID", key="nc_id")
@@ -220,7 +244,7 @@ def show():
 
             st.divider()
 
-            # --- CONSTRUCTOR ---
+            # --- CONSTRUCTOR DE RAZONES ---
             with st.container(border=True):
                 rc_1, rc_2 = st.columns([1, 2])
                 with rc_1:
@@ -239,7 +263,6 @@ def show():
                         with cols[idx]:
                             val = st.text_input(label, key=f"input_{frase_select}_{idx}")
                             user_inputs.append(val)
-                    
                     with cols[-1]:
                         st.write("")
                         st.write("") 
@@ -259,31 +282,27 @@ def show():
             st.text_area("Razón Final (Constructor):", key="nc_reason", height=100)
             st.markdown("---")
             
-            # --- BOTONES ACCIÓN ---
             nb_col1, nb_col2 = st.columns(2)
-
             with nb_col1:
                 if st.button("👀 Previsualizar", use_container_width=True, key="vis_nc"):
                     if nc_name and st.session_state.nc_reason:
                         id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
                         status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
-                        
                         texto_transfer = transfer
-                        if transfer == "Unsuccessful":
-                            texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
+                        if transfer == "Unsuccessful": texto_transfer = f"Unsuccessful ({transfer_fail_reason})"
 
                         texto = f"""❌ WC Not Completed – {status_titulo}
-CX: {nc_name} CORDOBA-{id_clean}
+CX: {nc_name} || CORDOBA-{id_clean}
 
 • Reason: {st.session_state.nc_reason}
 
 • Call Progress: {script_stage}
 • Transfer Status: {texto_transfer}
-Affiliate: {nc_aff}
-Language: {nc_lang}"""
+Affiliate: {nc_aff}"""
                         
+                        # ACTUALIZAMOS LAS DOS VARIABLES (MEMORIA Y WIDGET)
                         st.session_state.nota_nc_texto = texto
-                        st.session_state.nc_saved = False # Mostrar modo edición
+                        st.session_state.area_nc_edit = texto 
                         st.rerun()
                     else:
                         st.toast("⚠️ Falta Nombre o Razón")
@@ -293,44 +312,34 @@ Language: {nc_lang}"""
                 if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_nc", disabled=not habilitado_nc):
                     id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
                     status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
-                    
                     exito = guardar_log_supabase(
                         agent_name=st.session_state.real_name,
-                        customer_name=nc_name,
-                        cordoba_id=id_clean,
-                        result_type=f"Not Completed - {status_titulo}",
-                        affiliate=nc_aff,
-                        info_until=script_stage,
-                        client_lang=nc_lang
+                        customer_name=nc_name, cordoba_id=id_clean, result_type=f"Not Completed - {status_titulo}",
+                        affiliate=nc_aff, info_until=script_stage, client_lang=nc_lang
                     )
-                    
                     if exito:
-                        st.session_state.nc_saved = True # Cambiar a modo copia
                         st.toast("💾 Fallo registrado")
-                        st.rerun()
 
         with nc_der:
             st.markdown("##### 📋 Nota Final")
             
-            # --- MAGIA DE REEMPLAZO ---
-            if st.session_state.nc_saved:
-                st.error("✅ Guardado. Copia aquí:")
-                st.code(st.session_state.nota_nc_texto, language="text")
+            st.text_area(
+                "Edita y luego copia:", 
+                value=st.session_state.nota_nc_texto,
+                height=450,
+                key="area_nc_edit",
+                on_change=lambda: st.session_state.update(nota_nc_texto=st.session_state.area_nc_edit)
+            )
+
+            if st.session_state.nota_nc_texto:
+                boton_copiar_portapapeles(st.session_state.nota_nc_texto, "copy_nc")
                 
-                if st.button("🔄 Nuevo Registro", key="new_nc"):
+                if st.button("🔄 Limpiar Campos", key="new_nc"):
                     st.session_state.nota_nc_texto = ""
                     st.session_state.nc_reason = ""
-                    st.session_state.nc_saved = False
                     st.rerun()
             else:
-                if st.session_state.nota_nc_texto:
-                    st.text_area(
-                        "Revisa antes de guardar:", 
-                        key="nota_nc_texto",
-                        height=450
-                    )
-                else:
-                    st.info("👈 Construye la razón y pulsa Previsualizar.")
+                st.info("👈 Construye la razón y pulsa Previsualizar.")
 
 
     # ==========================================
@@ -341,50 +350,37 @@ Language: {nc_lang}"""
         
         with tp_izq:
             st.subheader("👥 Personas Presentes")
-            
             with st.container(border=True):
                 num_terceros = st.number_input("Cantidad de personas extra:", min_value=1, value=1, step=1)
-                
                 lista_terceros = [] 
                 for i in range(num_terceros):
                     st.markdown(f"**Persona #{i+1}**")
                     c_p1, c_p2 = st.columns(2)
-                    with c_p1:
-                        nom = st.text_input("Nombre", key=f"p_nom_{i}").strip()
-                    with c_p2:
-                        rel = st.text_input("Relación", placeholder="Ej: Father, Wife...", key=f"p_rel_{i}").strip()
-                    
-                    if nom and rel:
-                        lista_terceros.append({'nombre': nom, 'relacion': rel})
+                    with c_p1: nom = st.text_input("Nombre", key=f"p_nom_{i}").strip()
+                    with c_p2: rel = st.text_input("Relación", placeholder="Ej: Father, Wife...", key=f"p_rel_{i}").strip()
+                    if nom and rel: lista_terceros.append({'nombre': nom, 'relacion': rel})
 
             st.markdown("---")
-            
             if st.button("Generar Párrafo Legal", type="primary", key="btn_tp"):
                 if not lista_terceros:
                     st.warning("⚠️ Debes llenar los nombres y relaciones.")
                 else:
                     personas_fmt = [f"{p['nombre']} Customer's {p['relacion']}" for p in lista_terceros]
                     texto_personas = ", ".join(personas_fmt)
-
-                    if len(lista_terceros) > 1:
-                        sujeto = "these people"
-                    else:
-                        sujeto = "this person"
-
+                    sujeto = "these people" if len(lista_terceros) > 1 else "this person"
                     parrafo = (
                         f"✅ Third Party Authorization:\n"
                         f"Third party: {texto_personas}\n"
                         f"The customer authorizes {sujeto} to be present during the call."
                     )
-                    
                     st.session_state.nota_tp_texto = parrafo
                     st.rerun()
 
         with tp_der:
             st.subheader("⚖️ Resultado Legal")
-            # Para third party dejamos el code directo porque no se guarda en BD
+            st.text_area("Texto Legal:", value=st.session_state.nota_tp_texto, height=200)
             if st.session_state.nota_tp_texto:
-                 st.code(st.session_state.nota_tp_texto, language="text")
+                boton_copiar_portapapeles(st.session_state.nota_tp_texto, "copy_tp")
 
 if __name__ == "__main__":
     show()

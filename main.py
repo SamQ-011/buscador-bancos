@@ -75,15 +75,7 @@ def main():
     # ==========================================
 
     # --- 1. ENCABEZADO SUPERIOR ---
-    col_h1, col_h2 = st.columns([0.5, 9.5])
-    with col_h1:
-        st.write("🏦") 
-    with col_h2:
-        # Título dinámico opcional según rol
-        titulo_app = "Secure Portal Admin" if st.session_state.role == "Admin" else "Secure Portal"
-        st.markdown(f"### {titulo_app}")
     
-    st.divider()
 
     # --- 2. BARRA LATERAL (SIDEBAR) INTELIGENTE ---
     with st.sidebar:

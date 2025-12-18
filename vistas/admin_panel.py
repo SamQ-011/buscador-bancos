@@ -4,23 +4,20 @@ import altair as alt
 from datetime import datetime
 from supabase import create_client
 import bcrypt
+import time
 
-# --- 1. CONEXIÓN A SUPABASE (BLINDADA) ---
+# --- 1. CONEXIÓN A SUPABASE ---
 @st.cache_resource
 def init_connection():
     try:
-        # Intento 1: Buscar dentro de [connections.supabase]
         if "connections" in st.secrets and "supabase" in st.secrets["connections"]:
             url = st.secrets["connections"]["supabase"]["URL"]
             key = st.secrets["connections"]["supabase"]["KEY"]
-        # Intento 2: Buscar en la raíz
         else:
             url = st.secrets["URL"]
             key = st.secrets["KEY"]
-            
         return create_client(url, key)
     except Exception as e:
-        st.error(f"⚠️ Error de configuración de Secretos: {e}")
         return None
 
 supabase = init_connection()
@@ -31,21 +28,18 @@ def obtener_kpis_globales():
     try:
         if not supabase: return 0, pd.DataFrame()
 
-        # A. Total de Bancos (Tabla 'Creditors')
+        # A. Total de Bancos
         res_bancos = supabase.table("Creditors").select("name", count="exact", head=True).execute()
         total_bancos = res_bancos.count
         
-        # B. Actividad de HOY (Tabla 'Logs')
+        # B. Actividad de HOY
         hoy_str = datetime.now().strftime('%Y-%m-%d')
-        
-        # Usamos 'created_at' que es la que tiene tu tabla Logs
         res_logs = supabase.table("Logs").select("*").gte("created_at", hoy_str).execute()
         df_logs = pd.DataFrame(res_logs.data)
         
         return total_bancos, df_logs
 
     except Exception as e:
-        # Si falla, devolvemos 0 para no romper la app
         return 0, pd.DataFrame()
 
 # --- 3. INTERFAZ PRINCIPAL ---
@@ -54,7 +48,7 @@ def show():
     st.caption("Panel de Administración Centralizado")
 
     if not supabase:
-        st.warning("No se pudo conectar a la base de datos.")
+        st.error("🚨 Error Crítico: No hay conexión con la Base de Datos.")
         return
 
     # --- NAVEGACIÓN ---
@@ -93,7 +87,7 @@ def show():
             c_g1, c_g2 = st.columns([2, 1])
             
             with c_g1:
-                st.subheader("📈 Ranking de Actividad (Hoy)")
+                st.subheader("📈 Ranking de Actividad")
                 chart_rank = alt.Chart(df_hoy).mark_bar(
                     cornerRadius=5, 
                     color='#0F52BA'
@@ -107,7 +101,7 @@ def show():
                 st.altair_chart(chart_rank + text_rank, use_container_width=True)
             
             with c_g2:
-                st.subheader("🥧 Resultados Globales")
+                st.subheader("🥧 Resultados")
                 base = alt.Chart(df_hoy).encode(theta=alt.Theta("count()", stack=True))
                 pie = base.mark_arc(outerRadius=100, innerRadius=60).encode(
                     color=alt.Color("result", legend=None),
@@ -127,43 +121,34 @@ def show():
     # PESTAÑA 2: GESTIÓN DE BANCOS
     # ==========================================
     with tab_bancos:
-        st.subheader("🏦 Editor de Acreedores (Creditors)")
+        st.subheader("🏦 Editor de Acreedores")
         col_izq, col_der = st.columns([1, 2])
         
-        # --- A. CREAR NUEVO (CON DEBUGGING) ---
+        # --- A. CREAR NUEVO ---
         with col_izq:
             with st.container(border=True):
                 st.markdown("##### ➕ Agregar Manual")
                 
-                # 1. Definimos las llaves (keys) para poder borrarlas luego
                 if "k_name" not in st.session_state: st.session_state.k_name = ""
                 if "k_abrev" not in st.session_state: st.session_state.k_abrev = ""
 
-                # 2. Inputs vinculados al session_state
                 new_name = st.text_input("Nombre Entidad", key="k_name")
-                new_abrev = st.text_input("Abreviación (Opcional)", key="k_abrev")
+                new_abrev = st.text_input("Abreviación", key="k_abrev")
                 
-                # 3. Botón con lógica de limpieza
                 if st.button("Guardar Banco", type="primary", use_container_width=True):
                     if new_name:
                         try:
-                            # Insertamos
                             supabase.table("Creditors").insert({
                                 "name": new_name, 
                                 "abreviation": new_abrev
                             }).execute()
                             
-                            # MENSAJE DE ÉXITO
-                            st.success(f"✅ ¡{new_name} agregado exitosamente!")
+                            st.toast(f"✅ ¡{new_name} agregado!", icon="🏦")
                             
-                            # --- TRUCO DE MAGIA: BORRAR INPUTS ---
-                            # Borramos los valores de la memoria de Streamlit
+                            # Limpiar inputs
                             st.session_state.k_name = ""  
                             st.session_state.k_abrev = ""
-                            
-                            # Esperamos un instante y recargamos para ver el campo limpio
-                            import time
-                            time.sleep(1) 
+                            time.sleep(0.5) 
                             st.rerun()
                             
                         except Exception as e:
@@ -171,28 +156,25 @@ def show():
                     else:
                         st.warning("⚠️ El nombre es obligatorio.")
         
-        # --- B. BUSCAR Y EDITAR (SE MANTIENE IGUAL) ---
+        # --- B. BUSCAR Y EDITAR ---
         with col_der:
-             # ... (El resto del código de búsqueda que ya tenías está bien) ...
-             # Si quieres te lo copio, pero esa parte funcionaba bien.
-            search_q = st.text_input("🔍 Buscar banco para editar...", placeholder="Ej: Chase")
+            st.markdown("##### 🔍 Buscar y Editar")
+            search_q = st.text_input("Escribe para buscar...", placeholder="Ej: Chase, Wells Fargo...", label_visibility="collapsed")
             
             if search_q:
                 try:
                     res = supabase.table("Creditors").select("*")\
-                        .ilike("name", f"%{search_q}%").limit(20).execute()
+                        .ilike("name", f"%{search_q}%").limit(10).execute()
                     df_bancos = pd.DataFrame(res.data)
                     
                     if not df_bancos.empty:
-                        st.dataframe(df_bancos[['id', 'name', 'abreviation']], hide_index=True, use_container_width=True)
-                        st.divider()
+                        # Selector para editar
+                        opciones = {row['id']: f"{row['name']} ({row['abreviation'] or 'N/A'})" for _, row in df_bancos.iterrows()}
+                        id_sel = st.selectbox("Selecciona para editar:", list(opciones.keys()), format_func=lambda x: opciones[x])
                         
-                        lista_ids = df_bancos['id'].tolist()
-                        mapa_nombres = {row['id']: f"{row['name']}" for _, row in df_bancos.iterrows()}
-                        
-                        id_sel = st.selectbox("Selecciona cuál editar:", lista_ids, format_func=lambda x: mapa_nombres.get(x))
                         row_sel = df_bancos[df_bancos['id'] == id_sel].iloc[0]
                         
+                        st.divider()
                         with st.form("form_edit_bank"):
                             c_e1, c_e2 = st.columns(2)
                             ed_name = c_e1.text_input("Nombre", value=row_sel['name'])
@@ -202,12 +184,13 @@ def show():
                                 supabase.table("Creditors").update({
                                     "name": ed_name, "abreviation": ed_abrev
                                 }).eq("id", id_sel).execute()
-                                st.success("✅ Actualizado.")
+                                st.success("✅ Actualizado correctamente.")
+                                time.sleep(1)
                                 st.rerun()
 
                         with st.expander("🗑️ Zona de Peligro"):
-                            st.warning(f"¿Borrar '{row_sel['name']}'?")
-                            if st.button("Sí, Eliminar", key="btn_del_bank"):
+                            st.warning(f"¿Estás seguro de borrar '{row_sel['name']}'?")
+                            if st.button("Sí, Eliminar Banco", type="primary"):
                                 supabase.table("Creditors").delete().eq("id", id_sel).execute()
                                 st.success("Eliminado.")
                                 st.rerun()
@@ -246,16 +229,17 @@ def show():
                                 "category": cat_db,
                                 "active": True
                             }).execute()
-                            st.success("Publicado.")
+                            st.toast("Publicado con éxito!", icon="📢")
+                            time.sleep(1)
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
                     else:
-                        st.toast("⚠️ Faltan datos.")
+                        st.warning("⚠️ Título y Mensaje requeridos.")
 
         # --- B. LISTA DE AVISOS ACTIVOS ---
         with c_up_list:
-            st.markdown("##### 📡 En Circulación (Ordenado por Fecha)")
+            st.markdown("##### 📡 En Circulación")
             try:
                 res_up = supabase.table("Updates").select("*")\
                     .eq("active", True)\
@@ -266,20 +250,31 @@ def show():
                 
                 if noticias:
                     for noti in noticias:
-                        cat_raw = noti.get('category')
-                        cat_str = str(cat_raw).upper() if cat_raw else "INFO"
+                        cat_raw = noti.get('category', 'Info')
+                        cat_str = str(cat_raw).upper()
 
-                        icono = "ℹ️"
-                        if cat_str == 'WARNING': icono = "⚠️"
-                        if cat_str == 'CRITICAL': icono = "🚨"
+                        # Colores y Iconos
+                        if cat_str == 'CRITICAL': 
+                            border_c = "#ff4444"
+                            icon = "🚨"
+                        elif cat_str == 'WARNING': 
+                            border_c = "#ffbb33"
+                            icon = "⚠️"
+                        else: 
+                            border_c = "#0099CC"
+                            icon = "ℹ️"
                         
-                        fecha_corta = noti['date']
-                        
-                        with st.expander(f"{icono} {noti['title']} | 📅 {fecha_corta}"):
-                            st.markdown(f"**{cat_str} MESSAGE:**")
-                            st.write(noti['message'])
-                            st.markdown("---")
-                            if st.button("🔕 Desactivar", key=f"arch_{noti['id']}"):
+                        with st.container():
+                            st.markdown(
+                                f"""
+                                <div style="border-left: 5px solid {border_c}; padding-left: 10px; margin-bottom: 10px; background-color: #f9f9f9; border-radius: 5px; padding: 10px;">
+                                    <small>{noti['date']}</small><br>
+                                    <strong>{icon} {noti['title']}</strong><br>
+                                    {noti['message']}
+                                </div>
+                                """, unsafe_allow_html=True
+                            )
+                            if st.button("🔕 Archivar", key=f"arch_{noti['id']}"):
                                 supabase.table("Updates").update({"active": False}).eq("id", noti['id']).execute()
                                 st.rerun()
                 else:
@@ -293,7 +288,6 @@ def show():
     with tab_users:
         st.subheader("👥 Gestión de Usuarios (RRHH)")
         
-        # Estructura: Izquierda (Crear) - Derecha (Lista y Edición)
         c_u_new, c_u_list = st.columns([1, 2])
 
         # --- A. CREAR NUEVO USUARIO ---
@@ -315,11 +309,13 @@ def show():
                             supabase.table("Users").insert({
                                 "username": n_user,
                                 "name": n_name,
-                                "password": hashed, # <--- ENVIAR HASH
+                                "password": hashed,
                                 "role": n_role,
                                 "active": True
                             }).execute()
+                            
                             st.success(f"✅ Usuario {n_user} creado.")
+                            time.sleep(1)
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error al crear: {e}")
@@ -330,12 +326,10 @@ def show():
         with c_u_list:
             st.markdown("##### 📋 Nómina de Empleados")
             try:
-                # Traemos todos los usuarios ordenados por ID
                 res_users = supabase.table("Users").select("*").order("id").execute()
                 df_users = pd.DataFrame(res_users.data)
 
                 if not df_users.empty:
-                    # Mostramos tabla resumen (sin password por seguridad)
                     st.dataframe(
                         df_users[['id', 'username', 'name', 'role', 'active']], 
                         hide_index=True, 
@@ -345,13 +339,11 @@ def show():
                     st.divider()
                     st.markdown("##### 🛠️ Modificar Perfil")
                     
-                    # Selector de Usuario
                     user_ids = df_users['id'].tolist()
                     user_map = {row['id']: f"{row['name']} ({row['username']})" for _, row in df_users.iterrows()}
                     
                     sel_uid = st.selectbox("Selecciona empleado:", user_ids, format_func=lambda x: user_map.get(x))
                     
-                    # Obtenemos datos actuales
                     curr_user = df_users[df_users['id'] == sel_uid].iloc[0]
                     
                     with st.form("edit_user_form"):
@@ -370,15 +362,14 @@ def show():
                                 "role": e_role,
                                 "active": e_active
                             }
-                            # Solo actualizamos pass si escribió algo
                             if e_pass:
-                                # --- ENCRIPTAR ---
                                 hashed_new = bcrypt.hashpw(e_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                                 update_data["password"] = hashed_new
                             
                             try:
                                 supabase.table("Users").update(update_data).eq("id", sel_uid).execute()
                                 st.success("✅ Perfil actualizado.")
+                                time.sleep(1)
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Error al actualizar: {e}")
@@ -386,5 +377,7 @@ def show():
                     st.info("No hay usuarios registrados.")
             
             except Exception as e:
-
                 st.error(f"Error cargando usuarios: {e}")
+
+if __name__ == "__main__":
+    show()
