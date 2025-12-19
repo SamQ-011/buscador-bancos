@@ -21,7 +21,21 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- 2. FUNCIONES DE FECHA ---
+# --- 2. LÓGICA DE FECHAS (CORREGIDA CON FERIADOS) ---
+
+# Lista de Feriados Fijos (Mes, Día)
+# Puedes agregar más aquí (ej: 4 de Julio)
+FERIADOS_US = [
+    (12, 25), # 🎄 Navidad
+    (1, 1),   # 🎉 Año Nuevo
+    (7, 4),   # 🎆 Independence Day
+    (11, 11), # Veterans Day
+]
+
+def es_feriado(fecha):
+    """Retorna True si la fecha cae en un feriado definido"""
+    return (fecha.month, fecha.day) in FERIADOS_US
+
 def get_fechas_clave():
     """Calcula rangos de fechas en Eastern Time"""
     zona_et = pytz.timezone('US/Eastern')
@@ -38,10 +52,20 @@ def get_fechas_clave():
 def sumar_dias_habiles(fecha_inicio, dias_a_sumar):
     dias_agregados = 0
     fecha_actual = fecha_inicio
+    
     while dias_agregados < dias_a_sumar:
         fecha_actual += timedelta(days=1)
-        if fecha_actual.weekday() < 5: 
+        
+        # 1. Es Fin de Semana? (5=Sab, 6=Dom)
+        es_weekend = fecha_actual.weekday() >= 5
+        
+        # 2. Es Feriado? (Navidad, Año Nuevo...)
+        es_holidays = es_feriado(fecha_actual)
+        
+        # Solo sumamos si NO es fin de semana Y NO es feriado
+        if not es_weekend and not es_holidays: 
             dias_agregados += 1
+            
     return fecha_actual
 
 # --- 3. CARGA DE DATOS ---
@@ -105,6 +129,7 @@ def show():
     # C. SECCIÓN 1: FECHAS DE PAGO (DISEÑO LIMPIO)
     st.subheader("📅 Fechas de Pago Calculadas")
     
+    # AQUI SE USA LA NUEVA LÓGICA QUE SALTA NAVIDAD
     f_std = sumar_dias_habiles(ahora_et, 2) 
     f_ca = sumar_dias_habiles(ahora_et, 4)  
     f_max = ahora_et + timedelta(days=35)
@@ -123,6 +148,7 @@ def show():
     with col_d2:
         with st.container(border=True):
             st.markdown(f"<p style='{estilo_titulo}'>California (5 Days)</p>", unsafe_allow_html=True)
+            # AHORA ESTO DEBERÍA MOSTRAR DEC 26 (Si hoy es 19, salta el fin de semana y el 25)
             st.markdown(f"<p style='{estilo_fecha}'>{f_ca.strftime('%b %d')}</p>", unsafe_allow_html=True)
 
     with col_d3:
