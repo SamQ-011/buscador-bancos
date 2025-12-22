@@ -1,95 +1,103 @@
 import streamlit as st
-import time
-from sqlalchemy import text 
 import bcrypt
+import time
+from supabase import create_client
 
-def actualizar_password_supabase(username, nueva_clave):
+# --- 1. CONEXIÓN SEGURA (Patrón Unificado) ---
+@st.cache_resource
+def init_connection():
     try:
-        conn = st.connection("supabase", type="sql")
-        
-        # Sentencia SQL con comillas para respetar mayúsculas
-        query = 'UPDATE "Users" SET password = :p WHERE username = :u'
-        
-        # Ejecutamos la transacción
-        with conn.session as s:
-            # CORRECCIÓN AQUÍ: Usamos text() de sqlalchemy, no st.text()
-            s.execute(text(query), {"p": nueva_clave, "u": username})
-            s.commit()
-        return True
-    except Exception as e:
-        st.error(f"Error técnico al actualizar: {e}")
-        return False
-
-def validar_clave_actual(username, clave_ingresada):
-    try:
-        conn = st.connection("supabase", type="sql")
-        # 1. Traemos el hash de la BD (NO comparamos en SQL)
-        query = 'SELECT password FROM "Users" WHERE username = :u'
-        df = conn.query(query, params={"u": username}, ttl=0)
-        
-        if not df.empty:
-            hash_db = df.iloc[0]['password']
-            # 2. Comparamos con bcrypt
-            return bcrypt.checkpw(clave_ingresada.encode('utf-8'), hash_db.encode('utf-8'))
-        return False
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
+        return create_client(url, key)
     except:
+        return None
+
+# --- 2. LÓGICA DE SEGURIDAD ---
+def validar_y_actualizar(username, pass_actual, pass_nueva):
+    supabase = init_connection()
+    if not supabase:
+        st.error("🔌 Error de conexión con la base de datos.")
         return False
+
+    try:
+        # A. Traer el hash actual del usuario
+        response = supabase.table("Users").select("password").eq("username", username).execute()
+        
+        if not response.data:
+            st.error("❌ Usuario no encontrado.")
+            return False
+            
+        hash_db = response.data[0]['password']
+
+        # B. Verificar que la contraseña actual sea correcta
+        if not bcrypt.checkpw(pass_actual.encode('utf-8'), hash_db.encode('utf-8')):
+            st.error("❌ La contraseña actual es incorrecta.")
+            return False
+
+        # C. Encriptar la NUEVA contraseña
+        nuevo_hash = bcrypt.hashpw(pass_nueva.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        # D. Actualizar en Supabase
+        supabase.table("Users").update({"password": nuevo_hash}).eq("username", username).execute()
+        
+        return True
+
+    except Exception as e:
+        st.error(f"⚠️ Error técnico: {e}")
+        return False
+
+# --- 3. INTERFAZ (VISTA) ---
 def show():
     st.title("⚙️ Mi Perfil")
-    st.caption("Gestiona tu seguridad y preferencias.")
+    st.caption("Gestión de cuenta y seguridad.")
+    
+    # Datos de Sesión
+    usuario = st.session_state.get("username", "N/A")
+    nombre = st.session_state.get("real_name", "Usuario")
+    rol = st.session_state.get("role", "N/A")
+
+    # --- TARJETA DE INFORMACIÓN ---
+    with st.container(border=True):
+        c1, c2 = st.columns([1, 4])
+        with c1:
+            st.markdown("# 👤") # Avatar simple
+        with c2:
+            st.markdown(f"### {nombre}")
+            st.markdown(f"**Usuario:** `{usuario}` &nbsp; | &nbsp; **Rol:** `{rol}`")
+            st.caption("Para cambiar tu nombre o rol, contacta a un Administrador.")
+
     st.markdown("---")
 
-    col1, col2 = st.columns([1, 2])
-
-    # --- TARJETA IZQUIERDA ---
-    with col1:
-        with st.container(border=True):
-            st.markdown("### 👤 Datos")
-            st.info(f"**Usuario:**\n{st.session_state.username}")
-            st.info(f"**Nombre:**\n{st.session_state.real_name}")
-            st.info(f"**Rol:**\n{st.session_state.role}")
-
-    # --- TARJETA DERECHA ---
-    with col2:
-        with st.container(border=True):
-            st.markdown("### 🔐 Cambiar Contraseña")
-            
-            pass_actual = st.text_input("Contraseña Actual", type="password", key="p_old")
-            pass_nueva = st.text_input("Nueva Contraseña", type="password", key="p_new")
-            pass_confirm = st.text_input("Confirmar Nueva Contraseña", type="password", key="p_conf")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            if st.button("Actualizar Contraseña", type="primary", use_container_width=True):
-                # Validaciones
-                if not pass_actual or not pass_nueva:
-                    st.warning("⚠️ Debes llenar los campos.")
-                    return
+    # --- FORMULARIO DE CAMBIO DE CLAVE ---
+    st.subheader("🔐 Seguridad")
+    
+    with st.form("form_cambio_clave"):
+        st.write("Cambiar Contraseña")
+        
+        p_actual = st.text_input("Contraseña Actual", type="password")
+        p_nueva = st.text_input("Nueva Contraseña", type="password", help="Mínimo 6 caracteres")
+        p_confirm = st.text_input("Confirmar Nueva Contraseña", type="password")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        if st.form_submit_button("Actualizar Credenciales", type="primary"):
+            # Validaciones Frontend
+            if not p_actual or not p_nueva:
+                st.warning("⚠️ Debes llenar todos los campos.")
+            elif p_nueva != p_confirm:
+                st.error("❌ Las nuevas contraseñas no coinciden.")
+            elif len(p_nueva) < 6:
+                st.warning("⚠️ La contraseña nueva es muy corta (mínimo 6).")
+            else:
+                # Lógica de Backend
+                exito = validar_y_actualizar(usuario, p_actual, p_nueva)
                 
-                if pass_nueva != pass_confirm:
-                    st.error("❌ Las nuevas contraseñas no coinciden.")
-                    return
-                
-                if len(pass_nueva) < 4: # Bajé el límite a 4 por si usas claves cortas
-                    st.warning("⚠️ La contraseña es muy corta.")
-                    return
-
-                # Lógica de guardado
-                if validar_clave_actual(st.session_state.username, pass_actual):
-                    
-                    # --- ENCRIPTAR LA NUEVA ---
-                    hashed_new = bcrypt.hashpw(pass_nueva.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-                    if actualizar_password_supabase(st.session_state.username, hashed_new): # Enviamos hash
-                        st.success("✅ ¡Contraseña actualizada correctamente!")
-                        st.balloons()
-                        time.sleep(2)
-                        # Limpiamos campos recargando
-                        st.rerun()
-                    else:
-                        st.error("Hubo un problema al guardar en la base de datos.")
-                else:
-                    st.error("❌ La contraseña actual es incorrecta.")
+                if exito:
+                    st.success("✅ ¡Contraseña actualizada correctamente!")
+                    st.balloons()
+                    time.sleep(1.5)
+                    st.rerun()
 
 if __name__ == "__main__":
     show()

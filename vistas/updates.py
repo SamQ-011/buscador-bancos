@@ -1,22 +1,36 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from supabase import create_client
 
-# --- FUNCIÓN DE CARGA SQL ---
-@st.cache_data(ttl=600)
-def cargar_noticias_supabase():
+# --- 1. CONEXIÓN (Patrón Seguro) ---
+@st.cache_resource
+def init_connection():
     try:
-        conn = st.connection("supabase", type="sql")
-        # Traemos activas ordenadas por fecha
-        query = 'SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC'
-        df = conn.query(query, ttl=600)
-        return df
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
+        return create_client(url, key)
+    except:
+        return None
+
+# --- 2. FUNCIÓN DE CARGA DATOS ---
+def cargar_noticias_supabase():
+    supabase = init_connection()
+    if not supabase: return pd.DataFrame()
+    
+    try:
+        # Usamos la API en lugar de SQL directo
+        res = supabase.table("Updates").select("*")\
+            .eq("active", True)\
+            .order("date", desc=True)\
+            .execute()
+        return pd.DataFrame(res.data)
     except Exception as e:
         st.error(f"Error conectando a Updates: {e}")
         return pd.DataFrame()
 
 def show():
-    # --- ENCABEZADO Y ESTILO ---
+    # --- ENCABEZADO ---
     c_head, c_btn = st.columns([4, 1])
     with c_head:
         st.title("📢 Centro de Noticias")
@@ -24,109 +38,83 @@ def show():
     with c_btn:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Actualizar", use_container_width=True):
-            st.cache_data.clear()
+            st.cache_data.clear() # Limpiamos caché si usáramos @st.cache_data
             st.rerun()
 
     st.markdown("---")
 
-    # --- CARGA DE DATOS ---
+    # --- CARGA ---
     df = cargar_noticias_supabase()
 
     if not df.empty:
-        # --- BARRA DE HERRAMIENTAS (FILTROS) ---
+        # --- FILTROS ---
         col_search, col_filter = st.columns([2, 1])
         
         with col_search:
-            search_txt = st.text_input("Buscar en noticias:", placeholder="Ej: Feriado, Script...", label_visibility="collapsed")
+            search_txt = st.text_input("Buscar:", placeholder="Ej: Feriado...", label_visibility="collapsed")
         
         with col_filter:
-            filtro_cat = st.selectbox(
-                "Filtrar por:", 
-                ["Todas", "🔴 Critical", "🟡 Warning", "🔵 Info"], 
-                label_visibility="collapsed"
-            )
+            filtro_cat = st.selectbox("Filtrar:", ["Todas", "🔴 Critical", "🟡 Warning", "🔵 Info"], label_visibility="collapsed")
 
-        # --- LÓGICA DE FILTRADO (Python) ---
-        # 1. Filtro de Texto
+        # --- LÓGICA DE FILTRADO ---
         if search_txt:
             mask = df['title'].str.contains(search_txt, case=False, na=False) | \
                    df['message'].str.contains(search_txt, case=False, na=False)
             df = df[mask]
 
-        # 2. Filtro de Categoría
         if filtro_cat != "Todas":
-            keyword = filtro_cat.split(" ")[1].upper() # Extrae "CRITICAL", "WARNING", etc.
-            # Aseguramos que la columna category se compare bien
+            keyword = filtro_cat.split(" ")[1].upper() # "CRITICAL", "WARNING"...
             df = df[df['category'].astype(str).str.upper() == keyword]
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # --- RENDERIZADO DE TARJETAS ---
+        # --- RENDERIZADO ---
         if not df.empty:
             for index, row in df.iterrows():
-                # Preparar datos
+                # Datos
                 cat_raw = str(row.get('category', 'Info')).strip().upper()
-                titulo = row.get('title', 'Sin Título')
+                titulo = row.get('title', 'Aviso')
                 mensaje = row.get('message', '')
                 fecha_raw = str(row.get('date', ''))
 
-                # Formatear fecha bonita (Intenta parsear, si falla usa la raw)
+                # Formato Fecha
                 try:
-                    fecha_obj = datetime.strptime(fecha_raw, '%Y-%m-%d')
-                    fecha_fmt = fecha_obj.strftime('%b %d, %Y') # Ej: Dec 18, 2025
+                    fecha_fmt = datetime.strptime(fecha_raw, '%Y-%m-%d').strftime('%b %d, %Y')
                 except:
                     fecha_fmt = fecha_raw
 
-                # Estilos Dinámicos (CSS en Python)
-                if cat_raw == 'CRITICAL':
-                    border_color = "#ff4444" # Rojo
-                    bg_badge = "#ff4444"
-                    icon = "🚨"
-                elif cat_raw == 'WARNING':
-                    border_color = "#ffbb33" # Amarillo
-                    bg_badge = "#ffbb33"
-                    icon = "⚠️"
-                else: # Info
-                    border_color = "#0099CC" # Azul
-                    bg_badge = "#0099CC"
-                    icon = "ℹ️"
+                # Estilos CSS
+                estilos = {
+                    'CRITICAL': {'border': '#ff4444', 'bg': '#ff4444', 'icon': '🚨'},
+                    'WARNING':  {'border': '#ffbb33', 'bg': '#ffbb33', 'icon': '⚠️'},
+                    'INFO':     {'border': '#0099CC', 'bg': '#0099CC', 'icon': 'ℹ️'}
+                }
+                est = estilos.get(cat_raw, estilos['INFO'])
 
-                # HTML CARD (Diseño Profesional)
-                st.markdown(
-                    f"""
-                    <div style="
-                        background-color: white;
-                        border-radius: 8px;
-                        border-left: 5px solid {border_color};
-                        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-                        padding: 20px;
-                        margin-bottom: 15px;
-                    ">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <span style="
-                                background-color: {bg_badge}; 
-                                color: white; 
-                                padding: 4px 10px; 
-                                border-radius: 15px; 
-                                font-size: 12px; 
-                                font-weight: bold;
-                                text-transform: uppercase;
-                            ">{icon} {cat_raw}</span>
-                            <span style="color: #888; font-size: 14px;">📅 {fecha_fmt}</span>
-                        </div>
-                        <h3 style="margin: 0 0 10px 0; color: #333; font-size: 18px;">{titulo}</h3>
-                        <div style="color: #555; font-size: 15px; line-height: 1.5;">
-                            {mensaje}
-                        </div>
+                # Tarjeta HTML
+                st.markdown(f"""
+                <div style="
+                    background-color: white;
+                    border-radius: 8px;
+                    border-left: 5px solid {est['border']};
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+                    padding: 20px;
+                    margin-bottom: 15px;
+                ">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="background-color: {est['bg']}; color: white; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">
+                            {est['icon']} {cat_raw}
+                        </span>
+                        <span style="color: #999; font-size: 12px;">📅 {fecha_fmt}</span>
                     </div>
-                    """, 
-                    unsafe_allow_html=True
-                )
+                    <h3 style="margin: 5px 0 10px 0; color: #333; font-size: 18px;">{titulo}</h3>
+                    <div style="color: #555; font-size: 15px; line-height: 1.5;">{mensaje}</div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.info("No se encontraron noticias con esos filtros.")
-
+            st.info("No se encontraron resultados con ese filtro.")
     else:
-        st.info("📭 No hay noticias publicadas en el sistema.")
+        st.info("📭 No hay noticias publicadas.")
 
 if __name__ == "__main__":
     show()

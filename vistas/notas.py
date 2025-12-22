@@ -1,18 +1,47 @@
 import streamlit as st
-import streamlit.components.v1 as components  # <--- NECESARIO PARA EL BOTÓN JS
+import streamlit.components.v1 as components
 from datetime import datetime
-from sqlalchemy import text 
+from supabase import create_client
+import pytz 
 
-# --- FUNCIÓN DE BOTÓN DE COPIAR (JS LIMPIO) ---
+# --- 1. CONEXIÓN ---
+@st.cache_resource
+def init_connection():
+    try:
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
+        return create_client(url, key)
+    except:
+        return None
+
+# --- 2. FUNCIONES UTILITARIAS ---
+
+def enmascarar_nombre(nombre):
+    """
+    Convierte 'Juan Carlos Perez' -> 'Juan P.'
+    Protege la identidad (PII) en la base de datos.
+    """
+    if not nombre: return "Desconocido"
+    
+    clean_name = nombre.strip()
+    partes = clean_name.split()
+    
+    if len(partes) >= 2:
+        # Primer nombre + Primera letra del último elemento (apellido) + punto
+        return f"{partes[0]} {partes[-1][0]}."
+    else:
+        # Si solo tiene un nombre, se deja igual
+        return clean_name
+
 def boton_copiar_portapapeles(texto_a_copiar, key_unica):
-    """
-    Botón HTML/JS que copia el texto al portapapeles sin mostrar bloques de código.
-    """
-    if not texto_a_copiar:
-        return
-        
-    # Escapar caracteres para evitar errores de JS
-    texto_seguro = texto_a_copiar.replace("`", "\`").replace("$", "\$").replace("{", "\{").replace("}", "\}")
+    if not texto_a_copiar: return
+    
+    texto_seguro = (texto_a_copiar
+                    .replace("\\", "\\\\")
+                    .replace("`", "\\`")
+                    .replace("$", "\\$")
+                    .replace("{", "\\{")
+                    .replace("}", "\\}"))
     
     html_code = f"""
     <script>
@@ -23,36 +52,26 @@ def boton_copiar_portapapeles(texto_a_copiar, key_unica):
             btn.innerHTML = '✅ ¡Copiado!';
             btn.style.backgroundColor = '#d1e7dd';
             btn.style.borderColor = '#badbcc';
+            btn.style.color = '#0f5132';
             setTimeout(() => {{
                 btn.innerHTML = '📋 Copiar Nota';
                 btn.style.backgroundColor = '#f0f2f6';
                 btn.style.borderColor = '#d6d6d8';
+                btn.style.color = '#31333F';
             }}, 2000);
-        }}, function(err) {{
-            console.error('Error al copiar', err);
-        }});
+        }}, function(err) {{ console.error('Error', err); }});
     }}
     </script>
     <button id="btn_{key_unica}" onclick="copyToClipboard()" style="
-        width: 100%;
-        background-color: #f0f2f6;
-        color: #31333F;
-        border: 1px solid #d6d6d8;
-        padding: 0.5rem;
-        border-radius: 8px;
-        cursor: pointer;
-        font-family: sans-serif;
-        font-weight: 600;
-        font-size: 14px;
-        margin-top: 5px;
-        transition: all 0.2s;
-    ">
-        📋 Copiar Nota
-    </button>
+        width: 100%; background-color: #f0f2f6; color: #31333F;
+        border: 1px solid #d6d6d8; padding: 0.6rem; border-radius: 8px;
+        cursor: pointer; font-family: 'Segoe UI', sans-serif; font-weight: 600;
+        font-size: 14px; margin-top: 8px; transition: all 0.2s;
+    ">📋 Copiar Nota</button>
     """
-    components.html(html_code, height=50)
+    components.html(html_code, height=60)
 
-# --- BASE DE DATOS DE RAZONES ---
+# --- 3. BASE DE DATOS DE RAZONES (Diccionario) ---
 REASON_OPTIONS = {
     "📞 Contact / Transfer Issues": [
         {"label": "Call dropped / No answer", "template": "Call dropped. I tried to call back without answer. Please call the Cx back.", "inputs": []},
@@ -95,38 +114,48 @@ REASON_OPTIONS = {
     ]
 }
 
-# --- FUNCIÓN DE GUARDADO ---
-def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, affiliate, info_until, client_lang):
+# --- 4. FUNCIÓN DE GUARDADO (ACTUALIZADA) ---
+def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, affiliate, info_until, client_lang, reason_text=""):
+    supabase = init_connection()
+    if not supabase:
+        st.error("🔌 Error: No hay conexión con la base de datos.")
+        return False
+
     try:
-        conn = st.connection("supabase", type="sql")
-        now_iso = datetime.now().isoformat()
+        # A. FECHA UTC
+        now_utc = datetime.now(pytz.utc).isoformat()
         
-        query = """
-            INSERT INTO "Logs" (created_at, agent, customer, cordoba_id, result, comments, affiliate, info_until, client_language)
-            VALUES (:ts, :ag, :cu, :cid, :res, :com, :aff, :info, :lang)
-        """
-        params = {
-            "ts": now_iso, "ag": agent_name, "cu": customer_name, "cid": cordoba_id, "res": result_type,
-            "com": "", "aff": affiliate, "info": info_until, "lang": client_lang
+        # B. ENMASCARAR NOMBRE (PRIVACIDAD)
+        nombre_safe = enmascarar_nombre(customer_name)
+        
+        datos = {
+            "created_at": now_utc,
+            "agent": agent_name,
+            "customer": nombre_safe,   # <--- Guardamos alias (Juan P.)
+            "cordoba_id": cordoba_id,
+            "result": result_type,
+            "comments": reason_text,   # <--- Guardamos la razón aquí
+            "affiliate": affiliate,
+            "info_until": info_until,
+            "client_language": client_lang
         }
-        with conn.session as s:
-            s.execute(text(query), params)
-            s.commit()
+        
+        supabase.table("Logs").insert(datos).execute()
         return True
+        
     except Exception as e:
-        st.error(f"Error guardando log: {e}")
+        st.error(f"❌ Error al guardar: {e}")
         return False
 
 def show():
-    st.title("📝 Generador de Notas 2.0")
+    st.title("📝 Generador de Notas")
 
-    # --- MEMORIA (INICIALIZACIÓN) ---
+    # --- MEMORIA (STATE) ---
     if "nota_c_texto" not in st.session_state: st.session_state.nota_c_texto = ""
     if "nota_nc_texto" not in st.session_state: st.session_state.nota_nc_texto = ""
     if "nota_tp_texto" not in st.session_state: st.session_state.nota_tp_texto = ""
     if "nc_reason" not in st.session_state: st.session_state.nc_reason = ""
 
-    # --- PESTAÑAS ---
     tab_completed, tab_not_completed, tab_third_party = st.tabs([
         "✅ WC Completed", 
         "❌ WC Not Completed", 
@@ -142,15 +171,14 @@ def show():
         with c_izq:
             st.markdown("##### 🟢 Datos de Venta")
             c1, c2 = st.columns(2)
-            with c1: c_name = st.text_input("Cx Name", key="c_name")
-            with c2: c_id = st.text_input("Cordoba ID", key="c_id")
+            with c1: c_name = st.text_input("Cx Name", key="c_name").strip()
+            with c2: c_id = st.text_input("Cordoba ID", key="c_id").strip()
             
             c3, c4 = st.columns(2)
-            with c3: c_aff = st.text_input("Affiliate", key="c_aff")
+            with c3: c_aff = st.text_input("Affiliate", key="c_aff").strip()
             with c4: c_lang = st.selectbox("Language", ["English", "Spanish"], key="c_lang")
             
             st.markdown("---")
-            
             b_col1, b_col2 = st.columns(2)
             
             # BOTÓN VISUALIZAR
@@ -158,50 +186,44 @@ def show():
                 if st.button("👀 Previsualizar", use_container_width=True, key="vis_comp"):
                     if c_name and c_id:
                         id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
-                        texto = f"✅ WC Completed\nCX: {c_name} || CORDOBA-{id_clean}\nAffiliate: {c_aff}"
-                        
-                        # ACTUALIZAMOS LAS VARIABLES
+                        texto = f"✅ WC Completed\nCX: {c_name} || CORDOBA-{id_clean}\nAffiliate: {c_aff}\nLanguage: {c_lang}"
                         st.session_state.nota_c_texto = texto
-                        # [IMPORTANTE] FORZAMOS EL VALOR DEL WIDGET PARA QUE SE REFRESQUE
                         st.session_state.area_c_edit = texto 
-                        
                         st.rerun() 
                     else:
-                        st.toast("⚠️ Faltan datos")
+                        st.toast("⚠️ Faltan datos (Nombre o ID)", icon="⚠️")
 
-            # BOTÓN GUARDAR
+            # BOTÓN GUARDAR (COMPLETED)
             with b_col2:
-                # Se habilita solo si hay texto generado
                 habilitado = True if st.session_state.nota_c_texto else False
                 if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_comp", disabled=not habilitado):
                     id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
                     exito = guardar_log_supabase(
                         agent_name=st.session_state.real_name,
-                        customer_name=c_name, cordoba_id=id_clean, result_type="Completed",
-                        affiliate=c_aff, info_until="All info provided", client_lang=c_lang
+                        customer_name=c_name, 
+                        cordoba_id=id_clean, 
+                        result_type="Completed",
+                        affiliate=c_aff, 
+                        info_until="All info provided", 
+                        client_lang=c_lang,
+                        reason_text=""  # <--- Razón vacía en ventas completadas
                     )
                     if exito:
-                        st.toast("✅ Guardado en BD")
+                        st.toast("✅ Guardado exitosamente", icon="💾")
 
         with c_der:
             st.markdown("##### 📋 Nota Final")
-            
-            # TEXTAREA EDITABLE
             st.text_area(
                 "Edita y luego copia:", 
                 value=st.session_state.nota_c_texto,
                 height=200,
-                key="area_c_edit", # Esta llave se actualiza forzosamente arriba
+                key="area_c_edit",
                 on_change=lambda: st.session_state.update(nota_c_texto=st.session_state.area_c_edit)
             )
-
-            # BOTÓN DE COPIAR (Aparece si hay texto)
             if st.session_state.nota_c_texto:
                 boton_copiar_portapapeles(st.session_state.nota_c_texto, "copy_comp")
-                
-            if not st.session_state.nota_c_texto:
+            else:
                 st.info("👈 Llena los datos y pulsa Previsualizar.")
-
 
     # ==========================================
     # PESTAÑA 2: NOT COMPLETED
@@ -212,11 +234,11 @@ def show():
         with nc_izq:
             st.markdown("##### 🔴 Datos del Fallo")
             c1, c2 = st.columns(2) 
-            with c1: nc_name = st.text_input("Cx Name", key="nc_name")
-            with c2: nc_id = st.text_input("Cordoba ID", key="nc_id")
+            with c1: nc_name = st.text_input("Cx Name", key="nc_name").strip()
+            with c2: nc_id = st.text_input("Cordoba ID", key="nc_id").strip()
             
             c3, c4 = st.columns(2)
-            with c3: nc_aff = st.text_input("Affiliate", key="nc_aff")
+            with c3: nc_aff = st.text_input("Affiliate", key="nc_aff").strip()
             with c4: nc_lang = st.selectbox("Language", ["English", "Spanish"], key="nc_lang")
 
             st.markdown("**Progreso:**")
@@ -272,14 +294,14 @@ def show():
                                 st.session_state.nc_reason += ("\n" + texto_a_agregar) if st.session_state.nc_reason else texto_a_agregar
                                 st.rerun()
                             else:
-                                st.toast("⚠️ Faltan datos")
+                                st.toast("⚠️ Faltan datos para la plantilla", icon="⚠️")
                 else:
                     if st.button(f"➕ Añadir '{frase_select}'"):
                         texto_a_agregar = frase_data["template"]
                         st.session_state.nc_reason += ("\n" + texto_a_agregar) if st.session_state.nc_reason else texto_a_agregar
                         st.rerun()
 
-            st.text_area("Razón Final (Constructor):", key="nc_reason", height=100)
+            st.text_area("Razón Final:", key="nc_reason", height=100)
             st.markdown("---")
             
             nb_col1, nb_col2 = st.columns(2)
@@ -298,31 +320,37 @@ CX: {nc_name} || CORDOBA-{id_clean}
 
 • Call Progress: {script_stage}
 • Transfer Status: {texto_transfer}
-Affiliate: {nc_aff}"""
+Affiliate: {nc_aff}
+Language: {nc_lang}"""
                         
-                        # ACTUALIZAMOS LAS DOS VARIABLES (MEMORIA Y WIDGET)
                         st.session_state.nota_nc_texto = texto
                         st.session_state.area_nc_edit = texto 
                         st.rerun()
                     else:
-                        st.toast("⚠️ Falta Nombre o Razón")
+                        st.toast("⚠️ Falta Nombre o Razón", icon="⚠️")
 
+            # BOTÓN GUARDAR (NOT COMPLETED)
             with nb_col2:
                 habilitado_nc = True if st.session_state.nota_nc_texto else False
                 if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_nc", disabled=not habilitado_nc):
                     id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
                     status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
+                    
                     exito = guardar_log_supabase(
                         agent_name=st.session_state.real_name,
-                        customer_name=nc_name, cordoba_id=id_clean, result_type=f"Not Completed - {status_titulo}",
-                        affiliate=nc_aff, info_until=script_stage, client_lang=nc_lang
+                        customer_name=nc_name, 
+                        cordoba_id=id_clean, 
+                        result_type=f"Not Completed - {status_titulo}",
+                        affiliate=nc_aff, 
+                        info_until=script_stage, 
+                        client_lang=nc_lang,
+                        reason_text=st.session_state.nc_reason  # <--- AQUÍ MANDAMOS LA RAZÓN A COMMENTS
                     )
                     if exito:
-                        st.toast("💾 Fallo registrado")
+                        st.toast("💾 Fallo registrado correctamente", icon="💾")
 
         with nc_der:
             st.markdown("##### 📋 Nota Final")
-            
             st.text_area(
                 "Edita y luego copia:", 
                 value=st.session_state.nota_nc_texto,
@@ -330,17 +358,14 @@ Affiliate: {nc_aff}"""
                 key="area_nc_edit",
                 on_change=lambda: st.session_state.update(nota_nc_texto=st.session_state.area_nc_edit)
             )
-
             if st.session_state.nota_nc_texto:
                 boton_copiar_portapapeles(st.session_state.nota_nc_texto, "copy_nc")
-                
                 if st.button("🔄 Limpiar Campos", key="new_nc"):
                     st.session_state.nota_nc_texto = ""
                     st.session_state.nc_reason = ""
                     st.rerun()
             else:
                 st.info("👈 Construye la razón y pulsa Previsualizar.")
-
 
     # ==========================================
     # PESTAÑA 3: THIRD PARTY

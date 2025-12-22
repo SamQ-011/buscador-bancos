@@ -1,98 +1,80 @@
 import streamlit as st
 import time
 import bcrypt
+from datetime import datetime, timedelta
+from supabase import create_client
+# NO importamos stx aquí para no crear conflictos, lo recibimos como parámetro
 
-def show():
-    # --- CSS: Limpieza visual y ajuste vertical ---
-    st.markdown("""
-        <style>
-            /* Ocultar elementos molestos */
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            
-            /* Ajuste para subir el login más arriba */
-            .block-container {
-                padding-top: 50px !important; /* Reduce el espacio superior */
-            }
-        </style>
-    """, unsafe_allow_html=True)
+@st.cache_resource
+def init_connection():
+    try:
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
+        return create_client(url, key)
+    except:
+        return None
 
-    # --- LAYOUT: EL TRUCO DEL CENTRADO ---
-    # Usamos columnas [3, 2, 3] para que la del medio sea angosta (compacta)
+# AHORA RECIBE EL MANAGER COMO ARGUMENTO
+def show(cookie_manager):
+    st.markdown("""<style>.block-container { padding-top: 50px !important; }</style>""", unsafe_allow_html=True)
+
     col_izq, col_centro, col_der = st.columns([3, 2, 3])
 
     with col_centro:
-        # LOGO O ICONO (Opcional, se ve pro)
         st.markdown("<h1 style='text-align: center; font-size: 50px;'>🏦</h1>", unsafe_allow_html=True)
         
-        # --- LA TARJETA (CARD) ---
-        # st.container(border=True) crea el recuadro gris sutil automáticamente
         with st.container(border=True):
             st.markdown("<h2 style='text-align: center; color: #0F52BA;'>Acceso</h2>", unsafe_allow_html=True)
             st.caption("Ingresa tus credenciales para continuar.")
             
-            # INPUTS COMPACTOS
             usuario = st.text_input("Usuario", placeholder="ej: jperez").strip()
-            password = st.text_input("Contraseña", type="password", placeholder="••••••").strip()
+            password = st.text_input("Contraseña", type="password").strip()
+            st.write("") 
             
-            st.markdown("<br>", unsafe_allow_html=True) # Pequeño respiro
-
-            # BOTÓN DE ACCESO
             if st.button("Entrar al Sistema", type="primary", use_container_width=True):
                 if usuario and password:
-                    autenticar_usuario(usuario, password)
+                    autenticar_usuario(usuario, password, cookie_manager)
                 else:
                     st.warning("⚠️ Faltan datos.")
 
-        # Pie de página pequeño fuera de la tarjeta
-        st.markdown(
-            "<div style='text-align: center; color: #888; font-size: 12px; margin-top: 10px;'>"
-            "🔒 Conexión Segura v2.0<br>Authorized Personnel Only"
-            "</div>", 
-            unsafe_allow_html=True
-        )
+        st.markdown("<div style='text-align: center; color: #888; font-size: 12px; margin-top: 10px;'>🔒 Conexión Segura</div>", unsafe_allow_html=True)
 
-def autenticar_usuario(user_input, pass_input):
+def autenticar_usuario(user_input, pass_input, cookie_manager):
+    supabase = init_connection()
+    if not supabase:
+        st.error("🚨 Error de conexión.")
+        return
+
     try:
-        # Conexión a Supabase
-        conn = st.connection("supabase", type="sql")
+        res = supabase.table("Users").select("*").eq("username", user_input).execute()
         
-        # --- CORRECCIÓN 1: Comillas dobles en "Users" ---
-        # Al poner "Users" entre comillas dobles, obligamos a SQL a respetar la mayúscula.
-        query = 'SELECT * FROM "Users" WHERE username = :u AND active = TRUE'
-        df = conn.query(query, params={"u": user_input}, ttl=0)
-        
-        if not df.empty:
-            datos_usuario = df.iloc[0]
-            password_hash_db = datos_usuario['password']
-            
-            # Guardar sesión
+        if res.data:
+            user_data = res.data[0]
+            if not user_data.get('active', True):
+                st.error("🚫 Cuenta desactivada.")
+                return
+
             try:
-                byte_password = pass_input.encode('utf-8')
-                byte_hash = password_hash_db.encode('utf-8')
-                
-                if bcrypt.checkpw(byte_password, byte_hash):
-                    # --- LOGIN EXITOSO (IGUAL QUE ANTES) ---
+                if bcrypt.checkpw(pass_input.encode('utf-8'), user_data['password'].encode('utf-8')):
+                    # 1. Sesión en RAM
                     st.session_state.logged_in = True
-                    st.session_state.username = datos_usuario['username']
-                    st.session_state.real_name = datos_usuario['name']
-                    st.session_state.role = datos_usuario.get('role', 'Agent') # Default seguro
+                    st.session_state.username = user_data['username']
+                    st.session_state.real_name = user_data['name']
+                    st.session_state.role = user_data['role']
                     
-                    st.toast(f"✅ ¡Hola de nuevo, {st.session_state.real_name}!", icon="👋")
+                    # 2. Sesión en Cookie (1 DÍA)
+                    expire = datetime.now() + timedelta(days=1)
+                    cookie_manager.set('cordoba_user', user_data['username'], expires_at=expire)
+                    
+                    st.toast("✅ Acceso concedido.", icon="🔓")
                     time.sleep(1)
                     st.rerun()
                 else:
                     st.error("❌ Contraseña incorrecta.")
             except ValueError:
-                # Esto pasa si en la BD hay alguna contraseña vieja sin encriptar
-                st.error("⚠️ Tu contraseña necesita actualización de seguridad. Contacta al Admin.")
+                st.error("⚠️ Error de seguridad.")
         else:
             st.error("❌ Usuario no encontrado.")
             
     except Exception as e:
-        print(e) # Solo para ti en consola
-        st.error("Error de conexión.")
-
-if __name__ == "__main__":
-    show()
+        st.error(f"Error: {e}")

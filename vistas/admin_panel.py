@@ -1,21 +1,18 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from supabase import create_client
 import bcrypt
 import time
+import pytz
 
 # --- 1. CONEXIÓN A SUPABASE ---
 @st.cache_resource
 def init_connection():
     try:
-        if "connections" in st.secrets and "supabase" in st.secrets["connections"]:
-            url = st.secrets["connections"]["supabase"]["URL"]
-            key = st.secrets["connections"]["supabase"]["KEY"]
-        else:
-            url = st.secrets["URL"]
-            key = st.secrets["KEY"]
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
         return create_client(url, key)
     except Exception as e:
         return None
@@ -24,7 +21,7 @@ supabase = init_connection()
 
 # --- 2. FUNCIONES DE DATOS (BACKEND) ---
 def obtener_kpis_globales():
-    """Calcula las métricas de toda la operación en tiempo real"""
+    """Calcula las métricas de toda la operación en tiempo real (Filtrando 'test')"""
     try:
         if not supabase: return 0, pd.DataFrame()
 
@@ -32,9 +29,15 @@ def obtener_kpis_globales():
         res_bancos = supabase.table("Creditors").select("name", count="exact", head=True).execute()
         total_bancos = res_bancos.count
         
-        # B. Actividad de HOY
+        # B. Actividad de HOY (Filtrando usuario 'test')
         hoy_str = datetime.now().strftime('%Y-%m-%d')
-        res_logs = supabase.table("Logs").select("*").gte("created_at", hoy_str).execute()
+        
+        # Traemos logs de hoy QUE NO SEAN de 'test'
+        res_logs = supabase.table("Logs").select("*")\
+            .gte("created_at", hoy_str)\
+            .neq("agent", "test")\
+            .execute()
+            
         df_logs = pd.DataFrame(res_logs.data)
         
         return total_bancos, df_logs
@@ -42,10 +45,19 @@ def obtener_kpis_globales():
     except Exception as e:
         return 0, pd.DataFrame()
 
+def obtener_lista_agentes():
+    """Trae la lista de usuarios activos para el filtro de reporte"""
+    try:
+        if not supabase: return []
+        res = supabase.table("Users").select("username").eq("active", True).order("username").execute()
+        return [u['username'] for u in res.data]
+    except:
+        return []
+
 # --- 3. INTERFAZ PRINCIPAL ---
 def show():
     st.title("🎛️ Torre de Control")
-    st.caption("Panel de Administración Centralizado")
+    st.caption("Panel de Administración & Auditoría")
 
     if not supabase:
         st.error("🚨 Error Crítico: No hay conexión con la Base de Datos.")
@@ -65,16 +77,21 @@ def show():
     with tab_dash:
         total_bancos, df_hoy = obtener_kpis_globales()
         
+        # TARJETAS DE MÉTRICAS (KPIs)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("🏦 Base de Datos", f"{total_bancos}", delta="Bancos Activos")
         
         if not df_hoy.empty:
             total_notas = len(df_hoy)
+            # Filtro flexible para detectar "Completed" o "WC Completed"
             ventas = len(df_hoy[df_hoy['result'].str.contains('Completed', case=False, na=False)])
             agentes_on = df_hoy['agent'].nunique()
             
+            # Tasa de conversión simple
+            tasa = (ventas / total_notas * 100) if total_notas > 0 else 0
+            
             col2.metric("📞 Llamadas Totales", total_notas, delta="Equipo Hoy")
-            col3.metric("🏆 Ventas (Completed)", ventas, delta="Equipo Hoy")
+            col3.metric("🏆 Ventas (Completed)", ventas, delta=f"{tasa:.1f}% Conv.")
             col4.metric("👨‍💼 Agentes Activos", agentes_on, delta="Online")
         else:
             col2.metric("📞 Llamadas Totales", 0)
@@ -83,17 +100,16 @@ def show():
 
         st.markdown("---")
 
+        # GRÁFICOS
         if not df_hoy.empty:
             c_g1, c_g2 = st.columns([2, 1])
             
             with c_g1:
                 st.subheader("📈 Ranking de Actividad")
-                chart_rank = alt.Chart(df_hoy).mark_bar(
-                    cornerRadius=5, 
-                    color='#0F52BA'
-                ).encode(
-                    x=alt.X('count()', title='Cantidad de Notas'),
-                    y=alt.Y('agent', sort='-x', title='Agente'),
+                chart_rank = alt.Chart(df_hoy).mark_bar(cornerRadius=5).encode(
+                    x=alt.X('count()', title='Notas Generadas'),
+                    y=alt.Y('agent', sort='-x', title=None),
+                    color=alt.Color('agent', legend=None, scale=alt.Scale(scheme='blues')),
                     tooltip=['agent', 'count()']
                 ).properties(height=300)
                 
@@ -115,7 +131,94 @@ def show():
                 )
                 st.altair_chart(pie + text, use_container_width=True)
         else:
-            st.info("😴 Sin actividad registrada el día de hoy.")
+            st.info("😴 Sin actividad registrada el día de hoy (excluyendo pruebas).")
+
+        st.markdown("---")
+        
+        # ==========================================
+        # 📥 ZONA DE DESCARGAS (REPORTING AVANZADO)
+        # ==========================================
+        with st.expander("📥 Exportar Datos (Auditoría & Excel)", expanded=False):
+            st.markdown("##### ⚙️ Configuración del Reporte")
+            
+            # 1. Filtros de Fecha y Agente
+            c_d1, c_d2, c_agente = st.columns([1, 1, 2])
+            
+            with c_d1:
+                f_inicio = st.date_input("Desde:", value=datetime.now().replace(day=1))
+            with c_d2:
+                f_fin = st.date_input("Hasta:", value=datetime.now())
+            
+            with c_agente:
+                # Cargamos lista de agentes real desde BD
+                lista_raw = obtener_lista_agentes()
+                opciones_agentes = ["🏢 REPORTE GLOBAL (Todos)"] + lista_raw
+                agente_filtro = st.selectbox("Seleccionar Objetivo:", opciones_agentes)
+            
+            # 2. Lógica de Conversión (Cacheada para velocidad)
+            @st.cache_data(ttl=60, show_spinner=False)
+            def convertir_df_a_csv(dataframe):
+                return dataframe.to_csv(index=False).encode('utf-8-sig')
+
+            st.write("") # Espacio
+            
+            # 3. Botón de Procesamiento
+            if st.button("🔄 Generar Archivo", type="secondary", use_container_width=True):
+                try:
+                    # Construcción de la Query Dinámica
+                    query = supabase.table("Logs").select("*")\
+                        .gte("created_at", f"{f_inicio}T00:00:00")\
+                        .lte("created_at", f"{f_fin}T23:59:59")\
+                        .order("created_at", desc=True)
+                    
+                    # Lógica de Filtrado
+                    es_global = "REPORTE GLOBAL" in agente_filtro
+                    
+                    if es_global:
+                        # Si es global, traemos todo MENOS 'test'
+                        query = query.neq("agent", "test")
+                        nombre_archivo = f"Reporte_GLOBAL_{f_inicio}_{f_fin}.csv"
+                    else:
+                        # Si es un agente específico, filtramos solo por él
+                        query = query.eq("agent", agente_filtro)
+                        nombre_archivo = f"Auditoria_{agente_filtro}_{f_inicio}_{f_fin}.csv"
+
+                    # Ejecutar Query
+                    res_dl = query.execute()
+                    df_export = pd.DataFrame(res_dl.data)
+
+                    if not df_export.empty:
+                        # Reordenar columnas para que el Excel se vea lógico
+                        cols_order = ['created_at', 'agent', 'result', 'customer', 'cordoba_id', 'affiliate', 'client_language', 'info_until']
+                        cols_existentes = [c for c in cols_order if c in df_export.columns]
+                        cols_extra = [c for c in df_export.columns if c not in cols_order]
+                        df_final = df_export[cols_existentes + cols_extra]
+
+                        # Generar CSV en memoria
+                        csv_data = convertir_df_a_csv(df_final)
+                        
+                        st.session_state['csv_buffer'] = csv_data
+                        st.session_state['csv_name'] = nombre_archivo
+                        
+                        msg_exito = f"✅ Reporte Global: {len(df_final)} registros." if es_global else f"✅ Auditoría para {agente_filtro}: {len(df_final)} registros."
+                        st.toast(msg_exito, icon="📊")
+                    else:
+                        st.warning("No se encontraron datos con esos filtros.")
+                        if 'csv_buffer' in st.session_state: del st.session_state['csv_buffer']
+                        
+                except Exception as e:
+                    st.error(f"Error generando reporte: {e}")
+
+            # 4. Botón de Descarga Real (Aparece solo si hay datos listos)
+            if 'csv_buffer' in st.session_state:
+                st.download_button(
+                    label=f"💾 Descargar: {st.session_state.get('csv_name', 'data.csv')}",
+                    data=st.session_state['csv_buffer'],
+                    file_name=st.session_state['csv_name'],
+                    mime='text/csv',
+                    type='primary',
+                    use_container_width=True
+                )
 
     # ==========================================
     # PESTAÑA 2: GESTIÓN DE BANCOS

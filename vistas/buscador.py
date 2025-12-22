@@ -1,24 +1,42 @@
 import streamlit as st
 import pandas as pd
 import re
+from supabase import create_client
 
-# --- CARGA DE DATOS OPTIMIZADA ---
-@st.cache_data(ttl=3600)
-def cargar_datos_bancos():
+# --- 1. CONEXIÓN SEGURA ---
+@st.cache_resource
+def init_connection():
     try:
-        conn = st.connection("supabase", type="sql")
-        # Traemos solo lo necesario
-        query = 'SELECT abreviation, name FROM "Creditors" ORDER BY abreviation ASC'
-        df = conn.query(query, ttl=3600)
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
+        return create_client(url, key)
+    except:
+        return None
+
+# --- 2. CARGA DE DATOS (API + CACHÉ) ---
+@st.cache_data(ttl=3600) # Guarda en memoria por 1 hora
+def cargar_datos_bancos():
+    supabase = init_connection()
+    if not supabase: return pd.DataFrame()
+
+    try:
+        # Usamos la API para traer todos los bancos
+        # Si la lista crece mucho (>5000), Supabase la paginación automática es un tema,
+        # pero para listas de bancos estándar esto funciona perfecto.
+        res = supabase.table("Creditors").select("abreviation, name").order("abreviation").execute()
+        
+        df = pd.DataFrame(res.data)
         
         if not df.empty:
             df = df.rename(columns={"abreviation": "Código", "name": "Acreedor"})
-            df = df.dropna(subset=['Código']) # Si no tiene código, no nos sirve para buscar
-            # Normalizamos a mayúsculas para búsquedas exactas
+            df = df.dropna(subset=['Código']) 
+            # Normalizamos
             df['Código_Upper'] = df['Código'].str.strip().str.upper()
+            
         return df
     except Exception as e:
-        st.error(f"Error conectando a Creditors: {e}")
+        # Fail silently in UI but log error
+        print(f"Error cargando bancos: {e}") 
         return pd.DataFrame()
 
 def limpiar_linea_texto(linea):
@@ -30,8 +48,7 @@ def limpiar_linea_texto(linea):
     parts = re.split(r'\t|\s{2,}', linea)
     texto_base = parts[0].strip()
     
-    # 2. Cortar si aparece un número largo (cuenta) o símbolo de dinero
-    # Busca donde empieza el primer dígito o el signo $
+    # 2. Cortar si aparece un número largo o dinero
     match = re.search(r'(\d|\$)', texto_base)
     if match:
         texto_base = texto_base[:match.start()].strip()
@@ -39,72 +56,62 @@ def limpiar_linea_texto(linea):
     return texto_base
 
 def show():
-    st.title("🔍 Buscador de Bancos")
-    st.caption("Búsqueda estricta por Código (Abreviation).")
+    st.title("🏦 Buscador de Acreedores")
+    st.caption("Validación de códigos bancarios (Manual o Masiva).")
 
     # Cargar DB
     df_db = cargar_datos_bancos()
     
-    # Crear un Diccionario Maestro para búsqueda ultra-rápida y exacta
-    # Estructura: {'CHASE': 'JPMORGAN CHASE...', 'AMEX': 'AMERICAN EXPRESS...'}
+    # Optimización: Diccionarios para búsqueda O(1)
     if not df_db.empty:
-        # Creamos un mapa: CLAVE (Mayúscula) -> VALOR (Nombre Real)
         mapa_bancos = dict(zip(df_db['Código_Upper'], df_db['Acreedor']))
-        lista_codigos_reales = dict(zip(df_db['Código_Upper'], df_db['Código'])) # Para mantener el casing original (ej: Chase vs CHASE)
+        lista_codigos_reales = dict(zip(df_db['Código_Upper'], df_db['Código']))
     else:
+        st.error("No se pudo cargar la base de datos de acreedores.")
         mapa_bancos = {}
         lista_codigos_reales = {}
 
     # Pestañas
-    tab_single, tab_batch = st.tabs(["🔎 Manual", "🚀 Por Lote (Batch)"])
+    tab_single, tab_batch = st.tabs(["🔎 Búsqueda Manual", "🚀 Validación por Lote"])
 
     # ==========================================
-    # MODO 1: BÚSQUEDA MANUAL (Filtrado estricto)
+    # MODO 1: BÚSQUEDA MANUAL
     # ==========================================
     with tab_single:
         c1, c2 = st.columns([3, 1])
         with c1:
             busqueda = st.text_input(
-                "Escribe el Código:", 
-                placeholder="Ej: AMEX",
+                "Escribe el Código o Nombre:", 
+                placeholder="Ej: AMEX, CHASE...",
                 label_visibility="collapsed"
             ).strip().upper()
         
-        with c2:
-            st.write("") # Espaciador
+        st.write("")
 
-        if busqueda:
-            if not df_db.empty:
-                # LÓGICA: Buscar SOLO en la columna Código
-                # Usamos startswith para que sea cómodo (si escribes 'AME' sale 'AMEX')
-                # Pero NO buscamos en el Nombre.
-                mask = df_db['Código_Upper'].str.startswith(busqueda)
-                resultados = df_db[mask].copy()
+        if busqueda and not df_db.empty:
+            # Buscar en Código O Nombre (Más flexible para manual)
+            mask = (df_db['Código_Upper'].str.contains(busqueda)) | \
+                   (df_db['Acreedor'].str.upper().str.contains(busqueda))
+            
+            resultados = df_db[mask].copy()
 
-                if not resultados.empty:
-                    st.success(f"✅ {len(resultados)} coincidencias de código.")
-                    # Mostramos tabla limpia (sin la columna auxiliar Upper)
-                    st.dataframe(
-                        resultados[['Código', 'Acreedor']], 
-                        use_container_width=True, 
-                        hide_index=True
-                    )
-                else:
-                    st.warning(f"⛔ No existe ningún código que empiece con '{busqueda}'")
+            if not resultados.empty:
+                st.success(f"✅ {len(resultados)} coincidencias.")
+                st.dataframe(
+                    resultados[['Código', 'Acreedor']], 
+                    use_container_width=True, 
+                    hide_index=True
+                )
             else:
-                st.error("Base de datos vacía.")
+                st.warning(f"⛔ No se encontraron resultados para '{busqueda}'")
     
     # ==========================================
-    # MODO 2: PEGADO MASIVO (Exact Match)
+    # MODO 2: PEGADO MASIVO (Validación Estricta)
     # ==========================================
     with tab_batch:
-        st.info("💡 Pega la lista del CRM. El sistema buscará coincidencias EXACTAS en los Códigos.")
+        st.info("💡 Pega una lista desde Excel/CRM para validar si los códigos existen.")
         
-        texto_pegado = st.text_area(
-            "Pega tu tabla aquí:", 
-            height=150, 
-            
-        )
+        texto_pegado = st.text_area("Pega tu lista aquí:", height=150)
         
         if st.button("⚡ Analizar Lote", type="primary"):
             if not texto_pegado:
@@ -119,25 +126,20 @@ def show():
                     linea_raw = linea.strip()
                     if not linea_raw: continue
                     
-                    # 1. Limpieza
+                    # Limpieza inteligente
                     codigo_input = limpiar_linea_texto(linea_raw).upper()
                     
-                    # Filtros anti-basura (cabeceras comunes)
-                    if codigo_input in ["CREDITOR", "ACCOUNT", "BALANCE", "DEBT"]:
+                    # Filtros anti-basura
+                    if codigo_input in ["CREDITOR", "ACCOUNT", "BALANCE", "DEBT", "AMOUNT"]:
                         continue
-                        
                     if len(codigo_input) < 2: continue 
 
-                    # 2. BÚSQUEDA EXACTA EN EL DICCIONARIO (O(1) Speed)
-                    # Verifica si el código limpio existe EXACTAMENTE en la base de datos
+                    # BÚSQUEDA EXACTA
                     if codigo_input in mapa_bancos:
-                        nombre_real = mapa_bancos[codigo_input]
-                        codigo_real = lista_codigos_reales[codigo_input]
-                        
                         encontrados.append({
-                            "Input": codigo_input, # Lo que detectamos
-                            "Código BD": codigo_real, # Como está en la BD
-                            "Acreedor": nombre_real
+                            "Input": codigo_input,
+                            "Código BD": lista_codigos_reales[codigo_input],
+                            "Acreedor": mapa_bancos[codigo_input]
                         })
                     else:
                         no_encontrados.append(codigo_input)
@@ -148,22 +150,16 @@ def show():
                 
                 with c_ok:
                     if encontrados:
-                        st.success(f"✅ {len(encontrados)} Reconocidos (Exactos)")
-                        df_res = pd.DataFrame(encontrados)
-                        st.dataframe(
-                            df_res[["Código BD", "Acreedor"]], 
-                            hide_index=True, 
-                            use_container_width=True
-                        )
+                        st.success(f"✅ {len(encontrados)} Códigos Válidos")
+                        st.dataframe(pd.DataFrame(encontrados)[["Código BD", "Acreedor"]], hide_index=True, use_container_width=True)
                     else:
-                        st.info("Ningún código exacto encontrado.")
+                        st.info("Ningún código válido encontrado.")
 
                 with c_fail:
                     if no_encontrados:
                         st.error(f"⚠️ {len(no_encontrados)} Desconocidos")
-                        st.caption("Estos códigos no existen en la columna 'abreviation':")
-                        # Mostramos lista simple para copiar
-                        st.text_area("No encontrados:", value="\n".join(no_encontrados), height=200)
+                        st.caption("No existen en sistema:")
+                        st.text_area("Copiar para revisar:", value="\n".join(no_encontrados), height=200)
 
 if __name__ == "__main__":
     show()
