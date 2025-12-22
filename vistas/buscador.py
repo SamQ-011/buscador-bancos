@@ -7,42 +7,49 @@ from supabase import create_client
 @st.cache_resource
 def init_connection():
     try:
-        url = st.secrets["connections"]["supabase"]["URL"]
-        key = st.secrets["connections"]["supabase"]["KEY"]
+        if "connections" in st.secrets and "supabase" in st.secrets["connections"]:
+            url = st.secrets["connections"]["supabase"]["URL"]
+            key = st.secrets["connections"]["supabase"]["KEY"]
+        else:
+            url = st.secrets["URL"]
+            key = st.secrets["KEY"]
         return create_client(url, key)
     except:
         return None
 
 # --- 2. CARGA DE DATOS (API + CACHÉ) ---
-@st.cache_data(ttl=3600) # Guarda en memoria por 1 hora
+@st.cache_data(ttl=3600) 
 def cargar_datos_bancos():
     supabase = init_connection()
     if not supabase: return pd.DataFrame()
 
     try:
-        # Usamos la API para traer todos los bancos
-        # Si la lista crece mucho (>5000), Supabase la paginación automática es un tema,
-        # pero para listas de bancos estándar esto funciona perfecto.
-        res = supabase.table("Creditors").select("abreviation, name").order("abreviation").execute()
+        # CORRECCIÓN 1: Agregamos .limit(10000) para traer TODOS los bancos
+        # (El default es 1000, por eso no encontraba el ID 1780)
+        res = supabase.table("Creditors")\
+            .select("abreviation, name")\
+            .order("abreviation")\
+            .limit(10000)\
+            .execute()
         
         df = pd.DataFrame(res.data)
         
         if not df.empty:
             df = df.rename(columns={"abreviation": "Código", "name": "Acreedor"})
             df = df.dropna(subset=['Código']) 
-            # Normalizamos
-            df['Código_Upper'] = df['Código'].str.strip().str.upper()
+            
+            # CORRECCIÓN 2: Limpieza profunda (quita dobles espacios y espacios invisibles)
+            # Reemplaza cualquier secuencia de espacios (\s+) por un solo espacio simple
+            df['Código_Upper'] = df['Código'].astype(str).str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
             
         return df
     except Exception as e:
-        # Fail silently in UI but log error
         print(f"Error cargando bancos: {e}") 
         return pd.DataFrame()
 
 def limpiar_linea_texto(linea):
     """
-    Limpia agresivamente para aislar el CÓDIGO del banco.
-    Ej: "CHASE    12345 $500" -> "CHASE"
+    Limpia para aislar el CÓDIGO del banco.
     """
     # 1. Separar por tabulaciones o múltiples espacios
     parts = re.split(r'\t|\s{2,}', linea)
@@ -53,6 +60,9 @@ def limpiar_linea_texto(linea):
     if match:
         texto_base = texto_base[:match.start()].strip()
     
+    # CORRECCIÓN 3: Normalizar espacios internos también en el input
+    texto_base = re.sub(r'\s+', ' ', texto_base)
+    
     return texto_base
 
 def show():
@@ -62,12 +72,12 @@ def show():
     # Cargar DB
     df_db = cargar_datos_bancos()
     
-    # Optimización: Diccionarios para búsqueda O(1)
     if not df_db.empty:
+        # Optimización: Diccionarios para búsqueda rápida
         mapa_bancos = dict(zip(df_db['Código_Upper'], df_db['Acreedor']))
         lista_codigos_reales = dict(zip(df_db['Código_Upper'], df_db['Código']))
     else:
-        st.error("No se pudo cargar la base de datos de acreedores.")
+        st.error("No se pudo cargar la base de datos de acreedores o está vacía.")
         mapa_bancos = {}
         lista_codigos_reales = {}
 
@@ -80,18 +90,21 @@ def show():
     with tab_single:
         c1, c2 = st.columns([3, 1])
         with c1:
-            busqueda = st.text_input(
+            busqueda_raw = st.text_input(
                 "Escribe el Código o Nombre:", 
                 placeholder="Ej: AMEX, CHASE...",
                 label_visibility="collapsed"
-            ).strip().upper()
+            )
         
         st.write("")
 
-        if busqueda and not df_db.empty:
-            # Buscar en Código O Nombre (Más flexible para manual)
-            mask = (df_db['Código_Upper'].str.contains(busqueda)) | \
-                   (df_db['Acreedor'].str.upper().str.contains(busqueda))
+        if busqueda_raw and not df_db.empty:
+            # Normalizamos lo que escribe el usuario para que coincida con la BD limpia
+            busqueda = re.sub(r'\s+', ' ', busqueda_raw.strip().upper())
+
+            # CORRECCIÓN 4: regex=False para evitar errores con paréntesis o símbolos especiales
+            mask = (df_db['Código_Upper'].str.contains(busqueda, regex=False)) | \
+                   (df_db['Acreedor'].str.upper().str.contains(busqueda, regex=False))
             
             resultados = df_db[mask].copy()
 
@@ -103,10 +116,10 @@ def show():
                     hide_index=True
                 )
             else:
-                st.warning(f"⛔ No se encontraron resultados para '{busqueda}'")
+                st.warning(f"⛔ No se encontraron resultados para '{busqueda_raw}'")
     
     # ==========================================
-    # MODO 2: PEGADO MASIVO (Validación Estricta)
+    # MODO 2: PEGADO MASIVO
     # ==========================================
     with tab_batch:
         st.info("💡 Pega una lista desde Excel/CRM para validar si los códigos existen.")
@@ -121,12 +134,11 @@ def show():
                 encontrados = []
                 no_encontrados = []
 
-                # Procesamiento
                 for linea in lineas:
                     linea_raw = linea.strip()
                     if not linea_raw: continue
                     
-                    # Limpieza inteligente
+                    # Limpieza
                     codigo_input = limpiar_linea_texto(linea_raw).upper()
                     
                     # Filtros anti-basura
