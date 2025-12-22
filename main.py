@@ -38,10 +38,11 @@ def init_connection():
     except:
         return None
 
-# --- GESTIÓN DE ESTADO (Inicialización Segura) ---
+# --- GESTIÓN DE ESTADO ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "real_name" not in st.session_state: st.session_state.real_name = ""
 if "role" not in st.session_state: st.session_state.role = "" 
+if "username" not in st.session_state: st.session_state.username = ""
 
 # --- IMPORTADOR ---
 try:
@@ -59,13 +60,16 @@ def intentar_reconexion():
     # Solo intentamos si no estamos logueados en RAM
     if not st.session_state.logged_in:
         
-        # Leemos cookies (Puede tardar un poco en refrescarse tras F5)
+        # Esperamos un momento para asegurar que el componente cargue (fix F5)
+        time.sleep(0.1)
+        
         cookies = cookie_manager.get_all()
         cookie_user = cookies.get("cordoba_user") if cookies else None
         
         if cookie_user:
             supabase = init_connection()
             try:
+                # Validamos que el usuario siga existiendo y esté activo
                 res = supabase.table("Users").select("*").eq("username", cookie_user).execute()
                 if res.data:
                     user_data = res.data[0]
@@ -108,15 +112,18 @@ def main():
         selection = st.radio("Ir a:", opciones, label_visibility="collapsed")
         st.markdown("---")
         
-        # 🔴 LOGOUT MEJORADO (SOLUCIÓN AQUÍ)
+        # 🔴 LOGOUT CORREGIDO (SIN CLEAR)
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            # A. Borrar cookie del navegador
+            # A. Borrar cookie
             cookie_manager.delete("cordoba_user")
             
-            # B. Limpiar TODA la memoria RAM de la app
-            st.session_state.clear()
+            # B. Limpieza QUIRÚRGICA (NO usamos clear() para no romper el manager)
+            st.session_state.logged_in = False
+            st.session_state.role = ""
+            st.session_state.real_name = ""
+            st.session_state.username = ""
             
-            # C. Darle tiempo al navegador para procesar el borrado (CRUCIAL)
+            # C. Pausa de seguridad
             time.sleep(0.5) 
             
             # D. Recargar
