@@ -28,13 +28,17 @@ st.markdown("""
 @st.cache_resource
 def init_connection():
     try:
-        url = st.secrets["connections"]["supabase"]["URL"]
-        key = st.secrets["connections"]["supabase"]["KEY"]
+        if "connections" in st.secrets and "supabase" in st.secrets["connections"]:
+            url = st.secrets["connections"]["supabase"]["URL"]
+            key = st.secrets["connections"]["supabase"]["KEY"]
+        else:
+            url = st.secrets["URL"]
+            key = st.secrets["KEY"]
         return create_client(url, key)
     except:
         return None
 
-# --- GESTIÓN DE ESTADO ---
+# --- GESTIÓN DE ESTADO (Inicialización Segura) ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "real_name" not in st.session_state: st.session_state.real_name = ""
 if "role" not in st.session_state: st.session_state.role = "" 
@@ -47,17 +51,15 @@ except ImportError as e:
     st.stop()
 
 # ==========================================
-# 🍪 GESTIÓN DE COOKIES (SOLUCIÓN F5)
+# 🍪 GESTIÓN DE COOKIES
 # ==========================================
-# Instanciamos el manager AQUÍ con una clave única
 cookie_manager = stx.CookieManager(key="cordoba_cookies")
 
 def intentar_reconexion():
     # Solo intentamos si no estamos logueados en RAM
     if not st.session_state.logged_in:
         
-        # TRUCO: A veces la cookie tarda un milisegundo en leerse tras F5
-        # Intentamos obtener todas las cookies primero para "despertar" al componente
+        # Leemos cookies (Puede tardar un poco en refrescarse tras F5)
         cookies = cookie_manager.get_all()
         cookie_user = cookies.get("cordoba_user") if cookies else None
         
@@ -72,7 +74,6 @@ def intentar_reconexion():
                         st.session_state.username = user_data['username']
                         st.session_state.real_name = user_data['name']
                         st.session_state.role = user_data['role']
-                        # Si encontramos la cookie y validamos, forzamos recarga visual inmediata
                         st.rerun()
             except Exception as e:
                 print(f"Error reconexión: {e}")
@@ -84,13 +85,12 @@ def main():
     # 1. Intentar revivir sesión
     intentar_reconexion()
 
-    # 2. Si falló la reconexión -> Mostrar Login
-    # IMPORTANTE: Le pasamos el 'cookie_manager' existente a login.show
+    # 2. Si NO estamos logueados -> Mostrar Login
     if not st.session_state.logged_in:
         login.show(cookie_manager)
         return
 
-    # 3. Si estamos logueados -> Mostrar App
+    # 3. Si SÍ estamos logueados -> Mostrar App
     with st.sidebar:
         st.write("") 
         with st.container(border=True):
@@ -99,6 +99,7 @@ def main():
             st.caption(f"Perfil: {st.session_state.role}")
         st.markdown("---")
         
+        # MENU SEGÚN ROL
         if st.session_state.role == "Admin":
             opciones = ["🎛️ Panel Admin", "🏠 Dashboard Personal", "📝 Generador Notas", "🔍 Buscar Bancos", "⚙️ Mi Perfil"]
         else:
@@ -107,15 +108,21 @@ def main():
         selection = st.radio("Ir a:", opciones, label_visibility="collapsed")
         st.markdown("---")
         
-        # LOGOUT
+        # 🔴 LOGOUT MEJORADO (SOLUCIÓN AQUÍ)
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
+            # A. Borrar cookie del navegador
             cookie_manager.delete("cordoba_user")
-            st.session_state.logged_in = False
-            st.session_state.real_name = ""
-            st.session_state.role = ""
+            
+            # B. Limpiar TODA la memoria RAM de la app
+            st.session_state.clear()
+            
+            # C. Darle tiempo al navegador para procesar el borrado (CRUCIAL)
+            time.sleep(0.5) 
+            
+            # D. Recargar
             st.rerun()
 
-    # ROUTER
+    # ROUTER DE VISTAS
     if selection == "🎛️ Panel Admin":
         if st.session_state.role == "Admin": admin_panel.show()
         else: st.error("⛔ Acceso Restringido")
