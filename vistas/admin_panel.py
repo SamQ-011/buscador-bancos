@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from supabase import create_client
 import bcrypt
 import time
-import pytz # Importante
+import pytz
 
 # --- 1. CONEXIÓN A SUPABASE ---
 @st.cache_resource
@@ -25,23 +25,21 @@ def obtener_kpis_globales():
     try:
         if not supabase: return 0, pd.DataFrame()
 
-        # A. Total de Bancos (Count exacto)
+        # A. Total de Bancos
         res_bancos = supabase.table("Creditors").select("name", count="exact", head=True).execute()
         total_bancos = res_bancos.count
         
-        # B. Actividad de HOY (CORREGIDO: ZONA HORARIA ET)
+        # B. Actividad de HOY (Hora NY)
         zona_et = pytz.timezone('US/Eastern')
         ahora_et = datetime.now(zona_et)
-        hoy_str = ahora_et.strftime('%Y-%m-%d') # Forzamos la fecha de NY, no la del servidor
+        hoy_str = ahora_et.strftime('%Y-%m-%d')
         
-        # Traemos logs de hoy QUE NO SEAN de 'test'
         res_logs = supabase.table("Logs").select("*")\
             .gte("created_at", hoy_str)\
             .neq("agent", "test")\
             .execute()
             
         df_logs = pd.DataFrame(res_logs.data)
-        
         return total_bancos, df_logs
 
     except Exception as e:
@@ -64,9 +62,10 @@ def show():
         st.error("🚨 Error Crítico: No hay conexión con la Base de Datos.")
         return
 
-    # --- NAVEGACIÓN ---
-    tab_dash, tab_bancos, tab_updates, tab_users = st.tabs([
+    # --- NAVEGACIÓN (5 Pestañas) ---
+    tab_dash, tab_editor, tab_bancos, tab_updates, tab_users = st.tabs([
         "📊 Dashboard Global", 
+        "🛠️ Editor de Registros",  # <--- NUEVA HERRAMIENTA
         "🏦 Gestión Bancos", 
         "🔔 Noticias (Updates)", 
         "👥 Usuarios (RRHH)"
@@ -78,16 +77,13 @@ def show():
     with tab_dash:
         total_bancos, df_hoy = obtener_kpis_globales()
         
-        # TARJETAS DE MÉTRICAS (KPIs)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("🏦 Base de Datos", f"{total_bancos}", delta="Bancos Activos")
         
         if not df_hoy.empty:
             total_notas = len(df_hoy)
-            # Filtro flexible
             ventas = len(df_hoy[df_hoy['result'].str.contains('Completed', case=False, na=False)])
             agentes_on = df_hoy['agent'].nunique()
-            
             tasa = (ventas / total_notas * 100) if total_notas > 0 else 0
             
             col2.metric("📞 Llamadas Totales", total_notas, delta="Equipo Hoy")
@@ -100,21 +96,17 @@ def show():
 
         st.markdown("---")
 
-        # GRÁFICOS
         if not df_hoy.empty:
             c_g1, c_g2 = st.columns([2, 1])
-            
             with c_g1:
                 st.subheader("📈 Ranking de Actividad")
                 chart_rank = alt.Chart(df_hoy).mark_bar(cornerRadius=5).encode(
-                    x=alt.X('count()', title='Notas Generadas'),
+                    x=alt.X('count()', title='Notas'),
                     y=alt.Y('agent', sort='-x', title=None),
-                    color=alt.Color('agent', legend=None, scale=alt.Scale(scheme='blues')),
+                    color=alt.Color('agent', legend=None),
                     tooltip=['agent', 'count()']
                 ).properties(height=300)
-                
-                text_rank = chart_rank.mark_text(dx=3, align='left').encode(text='count()')
-                st.altair_chart(chart_rank + text_rank, use_container_width=True)
+                st.altair_chart(chart_rank, use_container_width=True)
             
             with c_g2:
                 st.subheader("🥧 Resultados")
@@ -124,349 +116,227 @@ def show():
                     tooltip=["result", "count()"],
                     order=alt.Order("count()", sort="descending")
                 )
-                text = base.mark_text(radius=120).encode(
-                    text=alt.Text("count()"),
-                    order=alt.Order("count()", sort="descending"),
-                    color=alt.value("black") 
-                )
-                st.altair_chart(pie + text, use_container_width=True)
+                st.altair_chart(pie, use_container_width=True)
         else:
             st.info("😴 Sin actividad registrada hoy (Horario ET).")
 
-        st.markdown("---")
-        
-        # ==========================================
-        # 📥 ZONA DE DESCARGAS
-        # ==========================================
+        # Zona de Descargas (Auditoría)
         with st.expander("📥 Exportar Datos (Auditoría & Excel)", expanded=False):
-            st.markdown("##### ⚙️ Configuración del Reporte")
-            
             c_d1, c_d2, c_agente = st.columns([1, 1, 2])
-            
-            with c_d1:
-                f_inicio = st.date_input("Desde:", value=datetime.now().replace(day=1))
-            with c_d2:
-                f_fin = st.date_input("Hasta:", value=datetime.now())
-            
+            with c_d1: f_inicio = st.date_input("Desde:", value=datetime.now().replace(day=1))
+            with c_d2: f_fin = st.date_input("Hasta:", value=datetime.now())
             with c_agente:
-                lista_raw = obtener_lista_agentes()
-                opciones_agentes = ["🏢 REPORTE GLOBAL (Todos)"] + lista_raw
+                opciones_agentes = ["🏢 REPORTE GLOBAL (Todos)"] + obtener_lista_agentes()
                 agente_filtro = st.selectbox("Seleccionar Objetivo:", opciones_agentes)
             
-            @st.cache_data(ttl=60, show_spinner=False)
-            def convertir_df_a_csv(dataframe):
-                return dataframe.to_csv(index=False).encode('utf-8-sig')
-
-            st.write("") 
-            
-            if st.button("🔄 Generar Archivo", type="secondary", use_container_width=True):
+            if st.button("🔄 Generar CSV Auditoría", use_container_width=True):
                 try:
-                    # Query base
-                    query = supabase.table("Logs").select("*")\
-                        .gte("created_at", f"{f_inicio}T00:00:00")\
-                        .lte("created_at", f"{f_fin}T23:59:59")\
-                        .order("created_at", desc=True)
+                    query = supabase.table("Logs").select("*").gte("created_at", f"{f_inicio}").lte("created_at", f"{f_fin}T23:59:59").order("created_at", desc=True)
+                    if "REPORTE GLOBAL" in agente_filtro: query = query.neq("agent", "test")
+                    else: query = query.eq("agent", agente_filtro)
                     
-                    if "REPORTE GLOBAL" in agente_filtro:
-                        query = query.neq("agent", "test")
-                        nombre_archivo = f"Reporte_GLOBAL_{f_inicio}_{f_fin}.csv"
+                    res = query.execute()
+                    df_ex = pd.DataFrame(res.data)
+                    
+                    if not df_ex.empty:
+                        csv = df_ex.to_csv(index=False).encode('utf-8-sig')
+                        st.download_button("💾 Descargar CSV", csv, "auditoria.csv", "text/csv", type='primary')
+                        st.success(f"Generado: {len(df_ex)} registros.")
                     else:
-                        query = query.eq("agent", agente_filtro)
-                        nombre_archivo = f"Auditoria_{agente_filtro}_{f_inicio}_{f_fin}.csv"
-
-                    res_dl = query.execute()
-                    df_export = pd.DataFrame(res_dl.data)
-
-                    if not df_export.empty:
-                        cols_order = ['created_at', 'agent', 'result', 'customer', 'cordoba_id', 'affiliate', 'client_language', 'info_until']
-                        cols_existentes = [c for c in cols_order if c in df_export.columns]
-                        cols_extra = [c for c in df_export.columns if c not in cols_order]
-                        df_final = df_export[cols_existentes + cols_extra]
-
-                        csv_data = convertir_df_a_csv(df_final)
-                        
-                        st.session_state['csv_buffer'] = csv_data
-                        st.session_state['csv_name'] = nombre_archivo
-                        
-                        st.toast(f"✅ Reporte generado: {len(df_final)} filas.", icon="📊")
-                    else:
-                        st.warning("No se encontraron datos con esos filtros.")
-                        if 'csv_buffer' in st.session_state: del st.session_state['csv_buffer']
-                        
+                        st.warning("No hay datos.")
                 except Exception as e:
-                    st.error(f"Error generando reporte: {e}")
+                    st.error(f"Error: {e}")
 
-            if 'csv_buffer' in st.session_state:
-                st.download_button(
-                    label=f"💾 Descargar: {st.session_state.get('csv_name', 'data.csv')}",
-                    data=st.session_state['csv_buffer'],
-                    file_name=st.session_state['csv_name'],
-                    mime='text/csv',
-                    type='primary',
-                    use_container_width=True
-                )
     # ==========================================
-    # PESTAÑA 2: GESTIÓN DE BANCOS
+    # PESTAÑA 2: EDITOR DE REGISTROS (QUIRÓFANO)
+    # ==========================================
+    with tab_editor:
+        st.subheader("🛠️ Corrección de Logs (Quirófano)")
+        st.caption("Busca por ID o Nombre para corregir errores en registros existentes.")
+        
+        # 1. Buscador
+        search_log = st.text_input("🔍 Buscar registro:", placeholder="Escribe el ID Córdoba (ej: 12345) o Nombre Cliente").strip()
+        
+        if search_log:
+            try:
+                # Lógica Inteligente: Si es número busca ID, si es texto busca Nombre
+                if search_log.isdigit():
+                    res_search = supabase.table("Logs").select("*").eq("cordoba_id", search_log).order("created_at", desc=True).execute()
+                else:
+                    res_search = supabase.table("Logs").select("*").ilike("customer", f"%{search_log}%").order("created_at", desc=True).execute()
+                
+                logs_found = res_search.data
+                
+                if logs_found:
+                    st.success(f"✅ Se encontraron {len(logs_found)} registros.")
+                    
+                    # Selector visual para elegir cuál editar
+                    opciones_logs = {log['id']: f"{log['created_at'][:10]} | {log['customer']} | {log['result']} (Agente: {log['agent']})" for log in logs_found}
+                    selected_log_id = st.selectbox("Selecciona el registro a editar:", list(opciones_logs.keys()), format_func=lambda x: opciones_logs[x])
+                    
+                    # Cargar datos del seleccionado
+                    log_data = next(l for l in logs_found if l['id'] == selected_log_id)
+                    
+                    st.divider()
+                    
+                    # Formulario de Edición
+                    with st.form("edit_log_form"):
+                        st.markdown(f"**Editando ID Interno:** `{log_data['id']}` | **Agente:** `{log_data['agent']}`")
+                        
+                        col_e1, col_e2 = st.columns(2)
+                        new_customer = col_e1.text_input("Nombre Cliente", value=log_data['customer'])
+                        new_cordoba_id = col_e2.text_input("Cordoba ID", value=log_data['cordoba_id'])
+                        
+                        col_e3, col_e4 = st.columns(2)
+                        new_affiliate = col_e3.text_input("Afiliado", value=log_data['affiliate'] or "")
+                        
+                        # Lista de resultados posibles para facilitar la corrección
+                        posibles_resultados = ["Completed", "No Answer", "Voicemail", "Callback", "Not Interested", "Not Completed"]
+                        # Asegurar que el valor actual esté en la lista
+                        idx_res = 0
+                        current_res_simple = log_data['result'].split(" - ")[0] if log_data['result'] else "Completed"
+                        if current_res_simple in posibles_resultados:
+                            idx_res = posibles_resultados.index(current_res_simple)
+                            
+                        new_result_base = col_e4.selectbox("Resultado", posibles_resultados, index=idx_res)
+                        
+                        new_comments = st.text_area("Notas / Comentarios", value=log_data['comments'] or "")
+                        
+                        st.markdown("---")
+                        if st.form_submit_button("💾 Guardar Corrección", type="primary"):
+                            # Actualizar en Supabase
+                            supabase.table("Logs").update({
+                                "customer": new_customer,
+                                "cordoba_id": new_cordoba_id,
+                                "affiliate": new_affiliate,
+                                "result": new_result_base, # Ojo: aquí simplificamos el resultado si lo cambian
+                                "comments": new_comments
+                            }).eq("id", selected_log_id).execute()
+                            
+                            st.success("✅ Registro corregido exitosamente.")
+                            time.sleep(1)
+                            st.rerun()
+                else:
+                    st.warning("No se encontraron registros con ese criterio.")
+                    
+            except Exception as e:
+                st.error(f"Error buscando: {e}")
+
+    # ==========================================
+    # PESTAÑA 3: GESTIÓN DE BANCOS
     # ==========================================
     with tab_bancos:
         st.subheader("🏦 Editor de Acreedores")
-        col_izq, col_der = st.columns([1, 2])
+        c_bk1, c_bk2 = st.columns([1, 2])
         
-        # --- A. CREAR NUEVO ---
-        with col_izq:
+        with c_bk1:
             with st.container(border=True):
-                st.markdown("##### ➕ Agregar Manual")
-                
-                if "k_name" not in st.session_state: st.session_state.k_name = ""
-                if "k_abrev" not in st.session_state: st.session_state.k_abrev = ""
-
-                new_name = st.text_input("Nombre Entidad", key="k_name")
-                new_abrev = st.text_input("Abreviación", key="k_abrev")
-                
+                st.markdown("##### ➕ Nuevo Banco")
+                new_bk_name = st.text_input("Nombre Entidad")
+                new_bk_abrev = st.text_input("Abreviación")
                 if st.button("Guardar Banco", type="primary", use_container_width=True):
-                    if new_name:
-                        try:
-                            supabase.table("Creditors").insert({
-                                "name": new_name, 
-                                "abreviation": new_abrev
-                            }).execute()
-                            
-                            st.toast(f"✅ ¡{new_name} agregado!", icon="🏦")
-                            
-                            # Limpiar inputs
-                            st.session_state.k_name = ""  
-                            st.session_state.k_abrev = ""
-                            time.sleep(0.5) 
-                            st.rerun()
-                            
-                        except Exception as e:
-                            st.error(f"Error al guardar: {e}")
-                    else:
-                        st.warning("⚠️ El nombre es obligatorio.")
+                    if new_bk_name:
+                        supabase.table("Creditors").insert({"name": new_bk_name, "abreviation": new_bk_abrev}).execute()
+                        st.toast("✅ Banco agregado")
+                        time.sleep(1)
+                        st.rerun()
         
-        # --- B. BUSCAR Y EDITAR ---
-        with col_der:
+        with c_bk2:
             st.markdown("##### 🔍 Buscar y Editar")
-            search_q = st.text_input("Escribe para buscar...", placeholder="Ej: Chase, Wells Fargo...", label_visibility="collapsed")
-            
-            if search_q:
-                try:
-                    res = supabase.table("Creditors").select("*")\
-                        .ilike("name", f"%{search_q}%").limit(10).execute()
-                    df_bancos = pd.DataFrame(res.data)
+            q_bk = st.text_input("Buscar banco...", label_visibility="collapsed")
+            if q_bk:
+                res = supabase.table("Creditors").select("*").ilike("name", f"%{q_bk}%").limit(10).execute()
+                df_bk = pd.DataFrame(res.data)
+                if not df_bk.empty:
+                    bk_opts = {r['id']: f"{r['name']} ({r['abreviation']})" for _, r in df_bk.iterrows()}
+                    sel_bk = st.selectbox("Editar:", list(bk_opts.keys()), format_func=lambda x: bk_opts[x])
                     
-                    if not df_bancos.empty:
-                        # Selector para editar
-                        opciones = {row['id']: f"{row['name']} ({row['abreviation'] or 'N/A'})" for _, row in df_bancos.iterrows()}
-                        id_sel = st.selectbox("Selecciona para editar:", list(opciones.keys()), format_func=lambda x: opciones[x])
-                        
-                        row_sel = df_bancos[df_bancos['id'] == id_sel].iloc[0]
-                        
-                        st.divider()
-                        with st.form("form_edit_bank"):
-                            c_e1, c_e2 = st.columns(2)
-                            ed_name = c_e1.text_input("Nombre", value=row_sel['name'])
-                            ed_abrev = c_e2.text_input("Abreviación", value=row_sel['abreviation'] or "")
-                            
-                            if st.form_submit_button("💾 Actualizar Datos"):
-                                supabase.table("Creditors").update({
-                                    "name": ed_name, "abreviation": ed_abrev
-                                }).eq("id", id_sel).execute()
-                                st.success("✅ Actualizado correctamente.")
-                                time.sleep(1)
-                                st.rerun()
-
-                        with st.expander("🗑️ Zona de Peligro"):
-                            st.warning(f"¿Estás seguro de borrar '{row_sel['name']}'?")
-                            if st.button("Sí, Eliminar Banco", type="primary"):
-                                supabase.table("Creditors").delete().eq("id", id_sel).execute()
-                                st.success("Eliminado.")
-                                st.rerun()
-                    else:
-                        st.info("No se encontraron resultados.")
-                except Exception as e:
-                    st.error(f"Error en búsqueda: {e}")
+                    row = df_bk[df_bk['id'] == sel_bk].iloc[0]
+                    with st.form("edit_bk"):
+                        e_bk_n = st.text_input("Nombre", row['name'])
+                        e_bk_a = st.text_input("Abrev.", row['abreviation'])
+                        if st.form_submit_button("Actualizar"):
+                            supabase.table("Creditors").update({"name": e_bk_n, "abreviation": e_bk_a}).eq("id", sel_bk).execute()
+                            st.rerun()
+                    
+                    if st.button("🗑️ Eliminar Banco"):
+                        supabase.table("Creditors").delete().eq("id", sel_bk).execute()
+                        st.rerun()
 
     # ==========================================
-    # PESTAÑA 3: NOTICIAS (UPDATES)
+    # PESTAÑA 4: NOTICIAS (UPDATES)
     # ==========================================
     with tab_updates:
         st.subheader("📢 Centro de Comunicaciones")
-        c_up_new, c_up_list = st.columns([1, 2])
+        c_up1, c_up2 = st.columns([1, 2])
         
-        # --- A. PUBLICAR NUEVA ---
-        with c_up_new:
+        with c_up1:
             with st.container(border=True):
-                st.markdown("##### ✍️ Nuevo Aviso")
-                u_title = st.text_input("Título (Corto)")
-                u_msg = st.text_area("Mensaje", height=150)
-                u_cat = st.selectbox("Prioridad", ["🔵 Info", "🟡 Warning", "🔴 Critical"])
-                
-                if st.button("🚀 Publicar", use_container_width=True):
-                    if u_title and u_msg:
-                        cat_db = "Info"
-                        if "Warning" in u_cat: cat_db = "Warning"
-                        if "Critical" in u_cat: cat_db = "Critical"
-                        
-                        try:
-                            hoy_fecha = datetime.now().strftime('%Y-%m-%d')
-                            supabase.table("Updates").insert({
-                                "date": hoy_fecha, 
-                                "title": u_title,
-                                "message": u_msg,
-                                "category": cat_db,
-                                "active": True
-                            }).execute()
-                            st.toast("Publicado con éxito!", icon="📢")
-                            time.sleep(1)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                    else:
-                        st.warning("⚠️ Título y Mensaje requeridos.")
+                st.markdown("##### ➕ Publicar")
+                up_tit = st.text_input("Título")
+                up_msg = st.text_area("Mensaje")
+                up_cat = st.selectbox("Tipo", ["Info", "Warning", "Critical"])
+                if st.button("Publicar", use_container_width=True):
+                    if up_tit and up_msg:
+                        supabase.table("Updates").insert({
+                            "date": datetime.now().strftime('%Y-%m-%d'),
+                            "title": up_tit, "message": up_msg, "category": up_cat, "active": True
+                        }).execute()
+                        st.rerun()
 
-        # --- B. LISTA DE AVISOS ACTIVOS ---
-        with c_up_list:
-            st.markdown("##### 📡 En Circulación")
-            try:
-                res_up = supabase.table("Updates").select("*")\
-                    .eq("active", True)\
-                    .order("date", desc=True)\
-                    .execute()
-                
-                noticias = res_up.data
-                
-                if noticias:
-                    for noti in noticias:
-                        cat_raw = noti.get('category', 'Info')
-                        cat_str = str(cat_raw).upper()
-
-                        # Colores y Iconos
-                        if cat_str == 'CRITICAL': 
-                            border_c = "#ff4444"
-                            icon = "🚨"
-                        elif cat_str == 'WARNING': 
-                            border_c = "#ffbb33"
-                            icon = "⚠️"
-                        else: 
-                            border_c = "#0099CC"
-                            icon = "ℹ️"
-                        
-                        with st.container():
-                            st.markdown(
-                                f"""
-                                <div style="border-left: 5px solid {border_c}; padding-left: 10px; margin-bottom: 10px; background-color: #f9f9f9; border-radius: 5px; padding: 10px;">
-                                    <small>{noti['date']}</small><br>
-                                    <strong>{icon} {noti['title']}</strong><br>
-                                    {noti['message']}
-                                </div>
-                                """, unsafe_allow_html=True
-                            )
-                            if st.button("🔕 Archivar", key=f"arch_{noti['id']}"):
-                                supabase.table("Updates").update({"active": False}).eq("id", noti['id']).execute()
-                                st.rerun()
-                else:
-                    st.info("✅ No hay alertas activas.")
-            except Exception as e:
-                st.error(f"Error cargando noticias: {e}")
+        with c_up2:
+            st.markdown("##### 📡 Activas")
+            ups = supabase.table("Updates").select("*").eq("active", True).order("date", desc=True).execute().data
+            for u in ups:
+                color = "#ff4444" if u['category'] == 'Critical' else "#ffbb33" if u['category'] == 'Warning' else "#0099CC"
+                st.markdown(f"<div style='border-left:5px solid {color};padding:10px;background:#f9f9f9;margin-bottom:5px'><b>{u['title']}</b><br>{u['message']}</div>", unsafe_allow_html=True)
+                if st.button("🔕 Archivar", key=f"del_{u['id']}"):
+                    supabase.table("Updates").update({"active": False}).eq("id", u['id']).execute()
+                    st.rerun()
 
     # ==========================================
-    # PESTAÑA 4: USUARIOS (RRHH)
+    # PESTAÑA 5: USUARIOS
     # ==========================================
     with tab_users:
-        st.subheader("👥 Gestión de Usuarios (RRHH)")
+        st.subheader("👥 Gestión de Usuarios")
+        c_u1, c_u2 = st.columns([1, 2])
         
-        c_u_new, c_u_list = st.columns([1, 2])
-
-        # --- A. CREAR NUEVO USUARIO ---
-        with c_u_new:
+        with c_u1:
             with st.container(border=True):
-                st.markdown("##### ➕ Nuevo Agente")
+                st.markdown("##### ➕ Nuevo Usuario")
+                nu_user = st.text_input("Usuario")
+                nu_name = st.text_input("Nombre Real")
+                nu_pass = st.text_input("Password", type="password")
+                nu_role = st.selectbox("Rol", ["Agent", "Admin"])
+                if st.button("Crear", type="primary", use_container_width=True):
+                    if nu_user and nu_pass:
+                        hashed = bcrypt.hashpw(nu_pass.encode(), bcrypt.gensalt()).decode()
+                        supabase.table("Users").insert({"username": nu_user, "name": nu_name, "password": hashed, "role": nu_role}).execute()
+                        st.success("Creado!")
+                        time.sleep(1)
+                        st.rerun()
+
+        with c_u2:
+            users = supabase.table("Users").select("*").order("id").execute().data
+            if users:
+                df_u = pd.DataFrame(users)
+                st.dataframe(df_u[['username', 'name', 'role', 'active']], hide_index=True, use_container_width=True)
                 
-                n_user = st.text_input("Username (Login)", placeholder="ej: jdoe")
-                n_name = st.text_input("Nombre Real", placeholder="John Doe")
-                n_pass = st.text_input("Contraseña Inicial", type="password")
-                n_role = st.selectbox("Rol", ["Agent", "Admin"])
+                u_opts = {u['id']: f"{u['name']} ({u['username']})" for u in users}
+                sel_u = st.selectbox("Modificar:", list(u_opts.keys()), format_func=lambda x: u_opts[x])
+                u_dat = next(u for u in users if u['id'] == sel_u)
                 
-                if st.button("Crear Usuario", type="primary", use_container_width=True):
-                    if n_user and n_name and n_pass:
-                        try:
-                            # --- ENCRIPTAR ---
-                            hashed = bcrypt.hashpw(n_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-                            supabase.table("Users").insert({
-                                "username": n_user,
-                                "name": n_name,
-                                "password": hashed,
-                                "role": n_role,
-                                "active": True
-                            }).execute()
-                            
-                            st.success(f"✅ Usuario {n_user} creado.")
-                            time.sleep(1)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al crear: {e}")
-                    else:
-                        st.warning("⚠️ Todos los campos son obligatorios.")
-
-        # --- B. LISTA Y EDICIÓN ---
-        with c_u_list:
-            st.markdown("##### 📋 Nómina de Empleados")
-            try:
-                res_users = supabase.table("Users").select("*").order("id").execute()
-                df_users = pd.DataFrame(res_users.data)
-
-                if not df_users.empty:
-                    st.dataframe(
-                        df_users[['id', 'username', 'name', 'role', 'active']], 
-                        hide_index=True, 
-                        use_container_width=True
-                    )
+                with st.form("edit_user"):
+                    eu_n = st.text_input("Nombre", u_dat['name'])
+                    eu_r = st.selectbox("Rol", ["Agent", "Admin"], index=0 if u_dat['role'] == "Agent" else 1)
+                    eu_a = st.checkbox("Activo", u_dat['active'])
+                    eu_p = st.text_input("Nueva Pass (Opcional)", type="password")
                     
-                    st.divider()
-                    st.markdown("##### 🛠️ Modificar Perfil")
-                    
-                    user_ids = df_users['id'].tolist()
-                    user_map = {row['id']: f"{row['name']} ({row['username']})" for _, row in df_users.iterrows()}
-                    
-                    sel_uid = st.selectbox("Selecciona empleado:", user_ids, format_func=lambda x: user_map.get(x))
-                    
-                    curr_user = df_users[df_users['id'] == sel_uid].iloc[0]
-                    
-                    with st.form("edit_user_form"):
-                        c1, c2 = st.columns(2)
-                        e_name = c1.text_input("Nombre Real", value=curr_user['name'])
-                        e_role = c2.selectbox("Rol", ["Agent", "Admin"], index=0 if curr_user['role'] == "Agent" else 1)
-                        
-                        e_active = st.checkbox("✅ Usuario Activo (Acceso permitido)", value=curr_user['active'])
-                        
-                        st.markdown("**🔐 Cambiar Contraseña (Opcional)**")
-                        e_pass = st.text_input("Nueva contraseña (dejar vacío para no cambiar)", type="password")
-                        
-                        if st.form_submit_button("💾 Guardar Cambios"):
-                            update_data = {
-                                "name": e_name,
-                                "role": e_role,
-                                "active": e_active
-                            }
-                            if e_pass:
-                                hashed_new = bcrypt.hashpw(e_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                                update_data["password"] = hashed_new
-                            
-                            try:
-                                supabase.table("Users").update(update_data).eq("id", sel_uid).execute()
-                                st.success("✅ Perfil actualizado.")
-                                time.sleep(1)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error al actualizar: {e}")
-                else:
-                    st.info("No hay usuarios registrados.")
-            
-            except Exception as e:
-                st.error(f"Error cargando usuarios: {e}")
+                    if st.form_submit_button("Actualizar"):
+                        upd = {"name": eu_n, "role": eu_r, "active": eu_a}
+                        if eu_p: upd["password"] = bcrypt.hashpw(eu_p.encode(), bcrypt.gensalt()).decode()
+                        supabase.table("Users").update(upd).eq("id", sel_u).execute()
+                        st.rerun()
 
 if __name__ == "__main__":
-
     show()
