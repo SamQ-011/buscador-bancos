@@ -66,9 +66,6 @@ def limpiar_linea_texto(linea):
     return texto_base
 
 def show():
-    if st.button("🧹 FORZAR RECARGA DE DATOS (Clic aquí si falta un banco)"):
-        st.cache_data.clear()
-        st.rerun()
     st.title("🏦 Buscador de Acreedores")
     st.caption("Validación de códigos bancarios (Manual o Masiva).")
 
@@ -178,4 +175,5 @@ def show():
 
 if __name__ == "__main__":
     show()
+
 
