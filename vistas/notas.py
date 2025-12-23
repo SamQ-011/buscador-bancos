@@ -1,6 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import datetime
+import time
 from supabase import create_client
 import pytz 
 
@@ -17,31 +18,19 @@ def init_connection():
 # --- 2. FUNCIONES UTILITARIAS ---
 
 def enmascarar_nombre(nombre):
-    """
-    Convierte 'Juan Carlos Perez' -> 'Juan P.'
-    Protege la identidad (PII) en la base de datos.
-    """
+    """ Protege la identidad (PII) en la base de datos. """
     if not nombre: return "Desconocido"
-    
     clean_name = nombre.strip()
     partes = clean_name.split()
-    
     if len(partes) >= 2:
-        # Primer nombre + Primera letra del último elemento (apellido) + punto
         return f"{partes[0]} {partes[-1][0]}."
     else:
-        # Si solo tiene un nombre, se deja igual
         return clean_name
 
 def boton_copiar_portapapeles(texto_a_copiar, key_unica):
     if not texto_a_copiar: return
-    
-    texto_seguro = (texto_a_copiar
-                    .replace("\\", "\\\\")
-                    .replace("`", "\\`")
-                    .replace("$", "\\$")
-                    .replace("{", "\\{")
-                    .replace("}", "\\}"))
+    # Escapar caracteres para JS
+    texto_seguro = (texto_a_copiar.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
     
     html_code = f"""
     <script>
@@ -51,27 +40,109 @@ def boton_copiar_portapapeles(texto_a_copiar, key_unica):
             const btn = document.getElementById('btn_{key_unica}');
             btn.innerHTML = '✅ ¡Copiado!';
             btn.style.backgroundColor = '#d1e7dd';
-            btn.style.borderColor = '#badbcc';
-            btn.style.color = '#0f5132';
-            setTimeout(() => {{
-                btn.innerHTML = '📋 Copiar Nota';
-                btn.style.backgroundColor = '#f0f2f6';
-                btn.style.borderColor = '#d6d6d8';
-                btn.style.color = '#31333F';
-            }}, 2000);
+            setTimeout(() => {{ btn.innerHTML = '📋 Copiar Nota'; btn.style.backgroundColor = '#f0f2f6'; }}, 2000);
         }}, function(err) {{ console.error('Error', err); }});
     }}
     </script>
     <button id="btn_{key_unica}" onclick="copyToClipboard()" style="
-        width: 100%; background-color: #f0f2f6; color: #31333F;
-        border: 1px solid #d6d6d8; padding: 0.6rem; border-radius: 8px;
-        cursor: pointer; font-family: 'Segoe UI', sans-serif; font-weight: 600;
-        font-size: 14px; margin-top: 8px; transition: all 0.2s;
-    ">📋 Copiar Nota</button>
+        width: 100%; background-color: #f0f2f6; color: #31333F; border: 1px solid #d6d6d8; 
+        padding: 0.6rem; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; margin-top: 8px;">
+        📋 Copiar Nota
+    </button>
     """
     components.html(html_code, height=60)
 
-# --- 3. BASE DE DATOS DE RAZONES (Diccionario) ---
+# --- 3. FUNCIONES DE GUARDADO Y SEGURIDAD ---
+
+def guardar_log_supabase(data_dict):
+    """
+    Función genérica que recibe un diccionario y guarda en Logs.
+    """
+    supabase = init_connection()
+    if not supabase:
+        st.error("🔌 Error: No hay conexión con la base de datos.")
+        return False
+
+    try:
+        # A. FECHA UTC
+        now_utc = datetime.now(pytz.utc).isoformat()
+        
+        # B. ENMASCARAR NOMBRE
+        nombre_safe = enmascarar_nombre(data_dict['customer'])
+        
+        datos = {
+            "created_at": now_utc,
+            "agent": data_dict['agent'],
+            "customer": nombre_safe,   
+            "cordoba_id": data_dict['cordoba_id'],
+            "result": data_dict['result'],
+            "comments": data_dict['comments'],   
+            "affiliate": data_dict['affiliate'],
+            "info_until": data_dict['info_until'],
+            "client_language": data_dict['client_language']
+        }
+        
+        supabase.table("Logs").insert(datos).execute()
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error al guardar: {e}")
+        return False
+
+def check_duplicado_reciente(cordoba_id):
+    """
+    Retorna True si el usuario intentó guardar el mismo ID hace menos de 60 seg.
+    """
+    now = time.time()
+    if "last_save_time" in st.session_state:
+        delta = now - st.session_state.last_save_time
+        # Si pasó menos de 60 seg Y es el mismo ID
+        if delta < 60 and st.session_state.last_save_id == cordoba_id:
+            return True
+    return False
+
+def registrar_guardado_exitoso(cordoba_id):
+    """Actualiza el timestamp del último guardado para el anti-spam"""
+    st.session_state.last_save_time = time.time()
+    st.session_state.last_save_id = cordoba_id
+
+# --- 4. MODAL DE CONFIRMACIÓN (DOBLE VERIFICACIÓN) ---
+@st.dialog("🛡️ Confirmar Guardado")
+def confirmar_guardado(datos_a_guardar):
+    st.write("Por favor, revisa que los datos sean correctos antes de enviar a la Base de Datos.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.caption("Cliente")
+        st.info(datos_a_guardar['customer'])
+        st.caption("ID Córdoba")
+        st.info(datos_a_guardar['cordoba_id'])
+    with col2:
+        st.caption("Resultado")
+        if "Completed" in datos_a_guardar['result'] and "Not" not in datos_a_guardar['result']:
+            st.success(f"🏆 {datos_a_guardar['result']}")
+        else:
+            st.error(f"❌ {datos_a_guardar['result']}")
+        st.caption("Agente")
+        st.text(datos_a_guardar['agent'])
+
+    st.divider()
+    
+    col_cancel, col_confirm = st.columns([1, 1])
+    with col_cancel:
+        if st.button("Cancelar", use_container_width=True):
+            st.rerun()
+            
+    with col_confirm:
+        if st.button("✅ Confirmar y Guardar", type="primary", use_container_width=True):
+            exito = guardar_log_supabase(datos_a_guardar)
+            if exito:
+                registrar_guardado_exitoso(datos_a_guardar['cordoba_id'])
+                st.toast("✅ Guardado exitosamente", icon="💾")
+                time.sleep(1)
+                st.rerun()
+
+# --- 5. DICCIONARIO DE RAZONES ---
 REASON_OPTIONS = {
     "📞 Contact / Transfer Issues": [
         {"label": "Call dropped / No answer", "template": "Call dropped. I tried to call back without answer. Please call the Cx back.", "inputs": []},
@@ -114,47 +185,16 @@ REASON_OPTIONS = {
     ]
 }
 
-# --- 4. FUNCIÓN DE GUARDADO (ACTUALIZADA) ---
-def guardar_log_supabase(agent_name, customer_name, cordoba_id, result_type, affiliate, info_until, client_lang, reason_text=""):
-    supabase = init_connection()
-    if not supabase:
-        st.error("🔌 Error: No hay conexión con la base de datos.")
-        return False
-
-    try:
-        # A. FECHA UTC
-        now_utc = datetime.now(pytz.utc).isoformat()
-        
-        # B. ENMASCARAR NOMBRE (PRIVACIDAD)
-        nombre_safe = enmascarar_nombre(customer_name)
-        
-        datos = {
-            "created_at": now_utc,
-            "agent": agent_name,
-            "customer": nombre_safe,   # <--- Guardamos alias (Juan P.)
-            "cordoba_id": cordoba_id,
-            "result": result_type,
-            "comments": reason_text,   # <--- Guardamos la razón aquí
-            "affiliate": affiliate,
-            "info_until": info_until,
-            "client_language": client_lang
-        }
-        
-        supabase.table("Logs").insert(datos).execute()
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error al guardar: {e}")
-        return False
-
+# --- 6. UI PRINCIPAL ---
 def show():
     st.title("📝 Generador de Notas")
 
-    # --- MEMORIA (STATE) ---
+    # Inicializar memoria
     if "nota_c_texto" not in st.session_state: st.session_state.nota_c_texto = ""
     if "nota_nc_texto" not in st.session_state: st.session_state.nota_nc_texto = ""
     if "nota_tp_texto" not in st.session_state: st.session_state.nota_tp_texto = ""
     if "nc_reason" not in st.session_state: st.session_state.nc_reason = ""
+    if "real_name" not in st.session_state: st.session_state.real_name = "Agente Test" # Fallback
 
     tab_completed, tab_not_completed, tab_third_party = st.tabs([
         "✅ WC Completed", 
@@ -193,23 +233,30 @@ def show():
                     else:
                         st.toast("⚠️ Faltan datos (Nombre o ID)", icon="⚠️")
 
-            # BOTÓN GUARDAR (COMPLETED)
+            # BOTÓN GUARDAR INTELIGENTE
             with b_col2:
-                habilitado = True if st.session_state.nota_c_texto else False
-                if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_comp", disabled=not habilitado):
+                # 1. ¿Están los campos críticos llenos?
+                campos_ok = bool(c_name and c_id and st.session_state.nota_c_texto)
+                
+                if st.button("💾 Revisar y Guardar", type="primary", use_container_width=True, key="save_comp", disabled=not campos_ok):
                     id_clean = ''.join(filter(str.isdigit, c_id)) or "MISSING_ID"
-                    exito = guardar_log_supabase(
-                        agent_name=st.session_state.real_name,
-                        customer_name=c_name, 
-                        cordoba_id=id_clean, 
-                        result_type="Completed",
-                        affiliate=c_aff, 
-                        info_until="All info provided", 
-                        client_lang=c_lang,
-                        reason_text=""  # <--- Razón vacía en ventas completadas
-                    )
-                    if exito:
-                        st.toast("✅ Guardado exitosamente", icon="💾")
+                    
+                    # 2. Protección Anti-Doble Clic
+                    if check_duplicado_reciente(id_clean):
+                        st.warning(f"⚠️ ¡Calma! Ya registraste el ID {id_clean} hace menos de un minuto.")
+                    else:
+                        # 3. Preparar datos y lanzar confirmación
+                        paquete_datos = {
+                            "agent": st.session_state.real_name,
+                            "customer": c_name, 
+                            "cordoba_id": id_clean, 
+                            "result": "Completed",
+                            "affiliate": c_aff, 
+                            "info_until": "All info provided", 
+                            "client_language": c_lang,
+                            "comments": "" 
+                        }
+                        confirmar_guardado(paquete_datos)
 
         with c_der:
             st.markdown("##### 📋 Nota Final")
@@ -329,25 +376,31 @@ Language: {nc_lang}"""
                     else:
                         st.toast("⚠️ Falta Nombre o Razón", icon="⚠️")
 
-            # BOTÓN GUARDAR (NOT COMPLETED)
+            # BOTÓN GUARDAR INTELIGENTE (NC)
             with nb_col2:
-                habilitado_nc = True if st.session_state.nota_nc_texto else False
-                if st.button("💾 Guardar en BD", type="primary", use_container_width=True, key="save_nc", disabled=not habilitado_nc):
+                # 1. Validación de campos críticos
+                campos_nc_ok = bool(nc_name and nc_id and st.session_state.nc_reason and st.session_state.nota_nc_texto)
+                
+                if st.button("💾 Revisar y Guardar", type="primary", use_container_width=True, key="save_nc", disabled=not campos_nc_ok):
                     id_clean = ''.join(filter(str.isdigit, nc_id)) or "MISSING_ID"
-                    status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
                     
-                    exito = guardar_log_supabase(
-                        agent_name=st.session_state.real_name,
-                        customer_name=nc_name, 
-                        cordoba_id=id_clean, 
-                        result_type=f"Not Completed - {status_titulo}",
-                        affiliate=nc_aff, 
-                        info_until=script_stage, 
-                        client_lang=nc_lang,
-                        reason_text=st.session_state.nc_reason  # <--- AQUÍ MANDAMOS LA RAZÓN A COMMENTS
-                    )
-                    if exito:
-                        st.toast("💾 Fallo registrado correctamente", icon="💾")
+                    # 2. Protección Anti-Doble Clic
+                    if check_duplicado_reciente(id_clean):
+                        st.warning(f"⚠️ ¡Calma! Ya registraste el ID {id_clean} hace menos de un minuto.")
+                    else:
+                        # 3. Lanzar Confirmación
+                        status_titulo = "Returned" if return_call == "Yes" else "Not Returned"
+                        paquete_datos = {
+                            "agent": st.session_state.real_name,
+                            "customer": nc_name, 
+                            "cordoba_id": id_clean, 
+                            "result": f"Not Completed - {status_titulo}",
+                            "affiliate": nc_aff, 
+                            "info_until": script_stage, 
+                            "client_language": nc_lang,
+                            "comments": st.session_state.nc_reason
+                        }
+                        confirmar_guardado(paquete_datos)
 
         with nc_der:
             st.markdown("##### 📋 Nota Final")
