@@ -7,12 +7,8 @@ from supabase import create_client
 @st.cache_resource
 def init_connection():
     try:
-        if "connections" in st.secrets and "supabase" in st.secrets["connections"]:
-            url = st.secrets["connections"]["supabase"]["URL"]
-            key = st.secrets["connections"]["supabase"]["KEY"]
-        else:
-            url = st.secrets["URL"]
-            key = st.secrets["KEY"]
+        url = st.secrets["connections"]["supabase"]["URL"]
+        key = st.secrets["connections"]["supabase"]["KEY"]
         return create_client(url, key)
     except:
         return None
@@ -24,8 +20,7 @@ def cargar_datos_bancos():
     if not supabase: return pd.DataFrame()
 
     try:
-        # CORRECCIÓN 1: Agregamos .limit(10000) para traer TODOS los bancos
-        # (El default es 1000, por eso no encontraba el ID 1780)
+        # Traemos TODOS los bancos (Límite 10,000)
         res = supabase.table("Creditors")\
             .select("abreviation, name")\
             .order("abreviation")\
@@ -38,8 +33,7 @@ def cargar_datos_bancos():
             df = df.rename(columns={"abreviation": "Código", "name": "Acreedor"})
             df = df.dropna(subset=['Código']) 
             
-            # CORRECCIÓN 2: Limpieza profunda (quita dobles espacios y espacios invisibles)
-            # Reemplaza cualquier secuencia de espacios (\s+) por un solo espacio simple
+            # Limpieza profunda
             df['Código_Upper'] = df['Código'].astype(str).str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
             
         return df
@@ -51,26 +45,33 @@ def limpiar_linea_texto(linea):
     """
     Limpia para aislar el CÓDIGO del banco.
     """
-    # 1. Separar por tabulaciones o múltiples espacios
     parts = re.split(r'\t|\s{2,}', linea)
     texto_base = parts[0].strip()
-    
-    # 2. Cortar si aparece un número largo o dinero
     match = re.search(r'(\d|\$)', texto_base)
     if match:
         texto_base = texto_base[:match.start()].strip()
-    
-    # CORRECCIÓN 3: Normalizar espacios internos también en el input
     texto_base = re.sub(r'\s+', ' ', texto_base)
-    
     return texto_base
 
 def show():
-    st.title("🏦 Buscador de Acreedores")
-    st.caption("Validación de códigos bancarios (Manual o Masiva).")
-
-    # Cargar DB
+    # Cargar DB primero para tener el conteo
     df_db = cargar_datos_bancos()
+    
+    # --- MEJORA VISUAL: TÍTULO + CONTADOR ---
+    col_titulo, col_contador = st.columns([3, 1])
+    
+    with col_titulo:
+        st.title("🏦 Buscador de Acreedores")
+        st.caption("Validación de códigos bancarios (Manual o Masiva).")
+        
+    with col_contador:
+        if not df_db.empty:
+            # Mostramos el contador como una métrica elegante alineada a la derecha
+            st.metric("Total Acreedores Registrados", len(df_db), delta="Activos")
+        else:
+            st.warning("⚠️ Sin conexión")
+    # ----------------------------------------
+
     
     if not df_db.empty:
         # Optimización: Diccionarios para búsqueda rápida
@@ -82,7 +83,7 @@ def show():
         lista_codigos_reales = {}
 
     # Pestañas
-    tab_single, tab_batch = st.tabs(["🔎 Búsqueda Manual", "🚀 Validación por Lote"])
+    tab_single, tab_batch = st.tabs(["🔎 Búsqueda Manual", "🚀 Busqueda por Bloque"])
 
     # ==========================================
     # MODO 1: BÚSQUEDA MANUAL
@@ -99,10 +100,10 @@ def show():
         st.write("")
 
         if busqueda_raw and not df_db.empty:
-            # Normalizamos lo que escribe el usuario para que coincida con la BD limpia
+            # Normalizamos lo que escribe el usuario
             busqueda = re.sub(r'\s+', ' ', busqueda_raw.strip().upper())
 
-            # CORRECCIÓN 4: regex=False para evitar errores con paréntesis o símbolos especiales
+            # Búsqueda flexible (CONTIENE)
             mask = (df_db['Código_Upper'].str.contains(busqueda, regex=False)) | \
                    (df_db['Acreedor'].str.upper().str.contains(busqueda, regex=False))
             
@@ -175,5 +176,4 @@ def show():
 
 if __name__ == "__main__":
     show()
-
 

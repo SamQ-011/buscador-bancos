@@ -118,20 +118,42 @@ def show():
     supabase = init_connection()
 
     # A. TIEMPO
-    zona_et, ahora_et, hoy, inicio_semana, inicio_mes_dt = get_fechas_clave()
+    zona_et = pytz.timezone('US/Eastern')
+    zona_bo = pytz.timezone('America/La_Paz')
+    zona_co = pytz.timezone('America/Bogota')
+    
+    ahora_et = datetime.now(zona_et)
+    ahora_bo = datetime.now(zona_bo)
+    ahora_co = datetime.now(zona_co)
+    
+    # Variables clave para el resto del script (se basan en ET)
+    hoy = ahora_et.date()
+    inicio_semana = hoy - timedelta(days=hoy.weekday())
+    inicio_mes_dt = hoy.replace(day=1)
     inicio_mes_full = datetime.combine(inicio_mes_dt, datetime.min.time()).replace(tzinfo=zona_et)
+    
     nombre = st.session_state.get("real_name", "Agente")
     
     h1, h2 = st.columns([3, 1])
     with h1:
         st.markdown(f"### 🚀 Hola, {nombre}")
     with h2:
-        st.markdown(f"<div style='text-align: right; font-weight: bold; color: #555;'>🕒 {ahora_et.strftime('%I:%M %p')} ET</div>", unsafe_allow_html=True)
+        # Bloque de Relojes Apilados
+        st.markdown(
+            f"""
+            <div style='text-align: right; color: #444; line-height: 1.4;'>
+                <div style='font-weight: bold; font-size: 16px;'>ET {ahora_et.strftime('%I:%M %p')} </div>
+                <div style='font-size: 13px; color: #666;'>BOL {ahora_bo.strftime('%I:%M %p')} </div>
+                <div style='font-size: 13px; color: #666;'>COL {ahora_co.strftime('%I:%M %p')} </div>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
     
     st.markdown("---")
 
     # B. CALCULADORA DE FECHAS (ALGORITMO NUEVO)
-    st.subheader("📅 Fechas de Pago")
+    st.subheader("📅 First Payment Dates")
     
     # Usamos la nueva función con 3 y 5 días
     f_std = calcular_fecha_pago(ahora_et, 3) 
@@ -212,7 +234,7 @@ def show():
 
     # D. NOTICIAS
     st.markdown("---")
-    st.subheader("🔔 Noticias Corporativas")
+    st.subheader("🔔 Updates")
     df_news = cargar_noticias_activas(supabase)
     if not df_news.empty:
         for _, row in df_news.iterrows():
