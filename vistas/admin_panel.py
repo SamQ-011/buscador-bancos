@@ -5,7 +5,7 @@ from datetime import datetime, time as dt_time
 from supabase import create_client
 import bcrypt
 import time
-import pytz
+import pytz # Importante
 
 # --- 1. CONEXIÓN A SUPABASE ---
 @st.cache_resource
@@ -21,16 +21,18 @@ supabase = init_connection()
 
 # --- 2. FUNCIONES DE DATOS (BACKEND) ---
 def obtener_kpis_globales():
-    """Calcula las métricas de toda la operación en tiempo real (Filtrando 'test')"""
+    """Calcula las métricas de toda la operación en tiempo real"""
     try:
         if not supabase: return 0, pd.DataFrame()
 
-        # A. Total de Bancos
+        # A. Total de Bancos (Count exacto)
         res_bancos = supabase.table("Creditors").select("name", count="exact", head=True).execute()
         total_bancos = res_bancos.count
         
-        # B. Actividad de HOY (Filtrando usuario 'test')
-        hoy_str = datetime.now().strftime('%Y-%m-%d')
+        # B. Actividad de HOY (CORREGIDO: ZONA HORARIA ET)
+        zona_et = pytz.timezone('US/Eastern')
+        ahora_et = datetime.now(zona_et)
+        hoy_str = ahora_et.strftime('%Y-%m-%d') # Forzamos la fecha de NY, no la del servidor
         
         # Traemos logs de hoy QUE NO SEAN de 'test'
         res_logs = supabase.table("Logs").select("*")\
@@ -46,7 +48,6 @@ def obtener_kpis_globales():
         return 0, pd.DataFrame()
 
 def obtener_lista_agentes():
-    """Trae la lista de usuarios activos para el filtro de reporte"""
     try:
         if not supabase: return []
         res = supabase.table("Users").select("username").eq("active", True).order("username").execute()
@@ -83,11 +84,10 @@ def show():
         
         if not df_hoy.empty:
             total_notas = len(df_hoy)
-            # Filtro flexible para detectar "Completed" o "WC Completed"
+            # Filtro flexible
             ventas = len(df_hoy[df_hoy['result'].str.contains('Completed', case=False, na=False)])
             agentes_on = df_hoy['agent'].nunique()
             
-            # Tasa de conversión simple
             tasa = (ventas / total_notas * 100) if total_notas > 0 else 0
             
             col2.metric("📞 Llamadas Totales", total_notas, delta="Equipo Hoy")
@@ -131,17 +131,16 @@ def show():
                 )
                 st.altair_chart(pie + text, use_container_width=True)
         else:
-            st.info("😴 Sin actividad registrada el día de hoy (excluyendo pruebas).")
+            st.info("😴 Sin actividad registrada hoy (Horario ET).")
 
         st.markdown("---")
         
         # ==========================================
-        # 📥 ZONA DE DESCARGAS (REPORTING AVANZADO)
+        # 📥 ZONA DE DESCARGAS
         # ==========================================
         with st.expander("📥 Exportar Datos (Auditoría & Excel)", expanded=False):
             st.markdown("##### ⚙️ Configuración del Reporte")
             
-            # 1. Filtros de Fecha y Agente
             c_d1, c_d2, c_agente = st.columns([1, 1, 2])
             
             with c_d1:
@@ -150,58 +149,46 @@ def show():
                 f_fin = st.date_input("Hasta:", value=datetime.now())
             
             with c_agente:
-                # Cargamos lista de agentes real desde BD
                 lista_raw = obtener_lista_agentes()
                 opciones_agentes = ["🏢 REPORTE GLOBAL (Todos)"] + lista_raw
                 agente_filtro = st.selectbox("Seleccionar Objetivo:", opciones_agentes)
             
-            # 2. Lógica de Conversión (Cacheada para velocidad)
             @st.cache_data(ttl=60, show_spinner=False)
             def convertir_df_a_csv(dataframe):
                 return dataframe.to_csv(index=False).encode('utf-8-sig')
 
-            st.write("") # Espacio
+            st.write("") 
             
-            # 3. Botón de Procesamiento
             if st.button("🔄 Generar Archivo", type="secondary", use_container_width=True):
                 try:
-                    # Construcción de la Query Dinámica
+                    # Query base
                     query = supabase.table("Logs").select("*")\
                         .gte("created_at", f"{f_inicio}T00:00:00")\
                         .lte("created_at", f"{f_fin}T23:59:59")\
                         .order("created_at", desc=True)
                     
-                    # Lógica de Filtrado
-                    es_global = "REPORTE GLOBAL" in agente_filtro
-                    
-                    if es_global:
-                        # Si es global, traemos todo MENOS 'test'
+                    if "REPORTE GLOBAL" in agente_filtro:
                         query = query.neq("agent", "test")
                         nombre_archivo = f"Reporte_GLOBAL_{f_inicio}_{f_fin}.csv"
                     else:
-                        # Si es un agente específico, filtramos solo por él
                         query = query.eq("agent", agente_filtro)
                         nombre_archivo = f"Auditoria_{agente_filtro}_{f_inicio}_{f_fin}.csv"
 
-                    # Ejecutar Query
                     res_dl = query.execute()
                     df_export = pd.DataFrame(res_dl.data)
 
                     if not df_export.empty:
-                        # Reordenar columnas para que el Excel se vea lógico
                         cols_order = ['created_at', 'agent', 'result', 'customer', 'cordoba_id', 'affiliate', 'client_language', 'info_until']
                         cols_existentes = [c for c in cols_order if c in df_export.columns]
                         cols_extra = [c for c in df_export.columns if c not in cols_order]
                         df_final = df_export[cols_existentes + cols_extra]
 
-                        # Generar CSV en memoria
                         csv_data = convertir_df_a_csv(df_final)
                         
                         st.session_state['csv_buffer'] = csv_data
                         st.session_state['csv_name'] = nombre_archivo
                         
-                        msg_exito = f"✅ Reporte Global: {len(df_final)} registros." if es_global else f"✅ Auditoría para {agente_filtro}: {len(df_final)} registros."
-                        st.toast(msg_exito, icon="📊")
+                        st.toast(f"✅ Reporte generado: {len(df_final)} filas.", icon="📊")
                     else:
                         st.warning("No se encontraron datos con esos filtros.")
                         if 'csv_buffer' in st.session_state: del st.session_state['csv_buffer']
@@ -209,7 +196,6 @@ def show():
                 except Exception as e:
                     st.error(f"Error generando reporte: {e}")
 
-            # 4. Botón de Descarga Real (Aparece solo si hay datos listos)
             if 'csv_buffer' in st.session_state:
                 st.download_button(
                     label=f"💾 Descargar: {st.session_state.get('csv_name', 'data.csv')}",
@@ -219,7 +205,6 @@ def show():
                     type='primary',
                     use_container_width=True
                 )
-
     # ==========================================
     # PESTAÑA 2: GESTIÓN DE BANCOS
     # ==========================================
@@ -483,4 +468,5 @@ def show():
                 st.error(f"Error cargando usuarios: {e}")
 
 if __name__ == "__main__":
+
     show()
