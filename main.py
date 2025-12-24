@@ -2,27 +2,19 @@ import streamlit as st
 import extra_streamlit_components as stx
 import time
 from supabase import create_client
+import estilos  # <--- 1. Importamos tu nuevo archivo de diseño
 
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(
     page_title="Cordoba Workspace", 
     page_icon="🏢", 
-    layout="wide",
+    layout="wide", 
     initial_sidebar_state="expanded"
 )
 
-# --- CSS GLOBAL ---
-st.markdown("""
-    <style>
-        html, body, [class*="css"] { font-family: 'Segoe UI', sans-serif; }
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        .stDeployButton {display:none;}
-        .stApp { background-color: #F8F9FA; }
-        section[data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E5E7EB; }
-        div[data-testid="stMetric"] { background-color: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px; padding: 15px; }
-    </style>
-""", unsafe_allow_html=True)
+# --- 2. CARGAMOS EL ESTILO CORPORATIVO ---
+# Esto reemplaza al bloque st.markdown(<style>...) que tenías antes.
+estilos.cargar_css()
 
 # --- CONEXIÓN SUPABASE ---
 @st.cache_resource
@@ -96,11 +88,14 @@ def main():
 
     # 3. Si SÍ estamos logueados -> Mostrar App
     with st.sidebar:
+        # Aquí el logo se inyecta automáticamente desde estilos.py si existe la imagen
         st.write("") 
+        
         with st.container(border=True):
             icono = "🛡️" if st.session_state.role == "Admin" else "👤"
             st.markdown(f"**{icono} {st.session_state.real_name}**")
             st.caption(f"Perfil: {st.session_state.role}")
+        
         st.markdown("---")
         
         # MENU SEGÚN ROL
@@ -112,21 +107,14 @@ def main():
         selection = st.radio("Ir a:", opciones, label_visibility="collapsed")
         st.markdown("---")
         
-        # 🔴 LOGOUT CORREGIDO (SIN CLEAR)
+        # 🔴 LOGOUT
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            # A. Borrar cookie
             cookie_manager.delete("cordoba_user")
-            
-            # B. Limpieza QUIRÚRGICA (NO usamos clear() para no romper el manager)
             st.session_state.logged_in = False
             st.session_state.role = ""
             st.session_state.real_name = ""
             st.session_state.username = ""
-            
-            # C. Pausa de seguridad
             time.sleep(0.5) 
-            
-            # D. Recargar
             st.rerun()
 
     # ROUTER DE VISTAS
