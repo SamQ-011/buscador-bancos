@@ -1,247 +1,237 @@
-import streamlit as st
+import pytz
 import pandas as pd
 import altair as alt
+import streamlit as st
 from datetime import datetime, timedelta
-from supabase import create_client
-import pytz 
+from supabase import create_client, Client
 
-# --- 1. CONEXIÓN A SUPABASE ---
+# --- Configuration & Constants ---
+
+US_HOLIDAYS_2025 = {
+    (1, 1), (1, 20), (2, 17), (5, 26), (6, 19), 
+    (7, 4), (9, 1), (10, 13), (11, 11), (11, 27), (12, 25)
+}
+
+TZ_ET = pytz.timezone('US/Eastern')
+TZ_BO = pytz.timezone('America/La_Paz')
+TZ_CO = pytz.timezone('America/Bogota')
+
+# --- Infrastructure ---
+
 @st.cache_resource
-def init_connection():
+def init_connection() -> Client:
+    """Singleton connection to Supabase."""
     try:
-        url = st.secrets["connections"]["supabase"]["URL"]
-        key = st.secrets["connections"]["supabase"]["KEY"]
-        return create_client(url, key)
-    except:
+        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
+        return create_client(creds["URL"], creds["KEY"])
+    except Exception:
         return None
 
-# --- 2. LÓGICA DE FECHAS (ALGORITMO CORREGIDO) ---
+# --- Business Logic (Dates) ---
 
-FERIADOS_US_2025 = [
-    (1, 1),   # New Year's Day
-    (1, 20),  # MLK Jr. Day
-    (2, 17),  # Washington's Birthday
-    (5, 26),  # Memorial Day
-    (6, 19),  # Juneteenth
-    (7, 4),   # Independence Day
-    (9, 1),   # Labor Day
-    (10, 13), # Columbus Day
-    (11, 11), # Veterans Day
-    (11, 27), # Thanksgiving Day
-    (12, 25)  # Christmas Day 🎄
-]
+def _is_holiday(date_obj) -> bool:
+    return (date_obj.month, date_obj.day) in US_HOLIDAYS_2025
 
-def es_feriado(fecha):
-    return (fecha.month, fecha.day) in FERIADOS_US_2025
-
-def get_fechas_clave():
-    zona_et = pytz.timezone('US/Eastern')
-    ahora = datetime.now(zona_et)
-    hoy = ahora.date()
-    # Inicio de Semana (Lunes) y Mes
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
-    inicio_mes = hoy.replace(day=1)
-    return zona_et, ahora, hoy, inicio_semana, inicio_mes
-
-def calcular_fecha_pago(fecha_inicio, dias_objetivo):
+def calculate_business_date(start_date, target_days):
     """
-    Algoritmo de Conteo Inclusivo:
-    - Si HOY es hábil, HOY cuenta como Día 1.
-    - Si HOY NO es hábil, buscamos el siguiente.
+    Calculates future business date skipping weekends and US holidays.
+    Counts 'start_date' as Day 1 if it's a valid business day.
     """
-    fecha_cursor = fecha_inicio
-    dias_contados = 0
+    current_date = start_date
+    days_counted = 0
     
-    # Bucle infinito hasta completar los días requeridos (3 o 5)
-    while dias_contados < dias_objetivo:
-        # 1. Analizar el día donde está el cursor
-        es_fin_semana = fecha_cursor.weekday() >= 5 # 5=Sab, 6=Dom
-        es_holidays = es_feriado(fecha_cursor)
+    while days_counted < target_days:
+        is_weekend = current_date.weekday() >= 5
+        is_holiday = _is_holiday(current_date)
         
-        # 2. Si es un día válido, lo contamos
-        if not es_fin_semana and not es_holidays:
-            dias_contados += 1
-            
-            # Si ya llegamos a la meta (ej: día 3), ESTA es la fecha. Paramos aquí.
-            if dias_contados == dias_objetivo:
-                return fecha_cursor
+        if not is_weekend and not is_holiday:
+            days_counted += 1
+            if days_counted == target_days:
+                return current_date
         
-        # 3. Si no hemos terminado (o el día actual no valía), pasamos a mañana
-        fecha_cursor += timedelta(days=1)
+        current_date += timedelta(days=1)
             
-    return fecha_cursor
+    return current_date
 
-# --- 3. CARGA DE DATOS ---
-def cargar_noticias_activas(supabase):
+# --- Data Layer ---
+
+def fetch_active_news(supabase: Client) -> pd.DataFrame:
     if not supabase: return pd.DataFrame()
     try:
         res = supabase.table("Updates").select("*")\
-            .eq("active", True)\
-            .order("date", desc=True)\
-            .execute()
+            .eq("active", True).order("date", desc=True).execute()
         return pd.DataFrame(res.data)
-    except:
+    except Exception:
         return pd.DataFrame()
 
-def cargar_logs_del_mes(supabase, nombre_agente, fecha_inicio_mes_et):
+def fetch_agent_metrics(supabase: Client, agent_name: str, start_date_utc: str) -> pd.DataFrame:
     if not supabase: return pd.DataFrame()
     try:
-        inicio_utc = fecha_inicio_mes_et.astimezone(pytz.utc).isoformat()
         res = supabase.table("Logs").select("*")\
-            .eq("agent", nombre_agente)\
-            .gte("created_at", inicio_utc)\
+            .eq("agent", agent_name)\
+            .gte("created_at", start_date_utc)\
             .order("created_at", desc=True)\
             .execute()
         return pd.DataFrame(res.data)
-    except:
+    except Exception:
         return pd.DataFrame()
 
-# --- 4. COMPONENTE UI ---
-def tarjeta_progreso(titulo, valor, meta):
-    progreso = min(valor / meta, 1.0) if meta > 0 else 0
-    porcentaje = int(progreso * 100)
-    color_texto = "#ff4444" 
-    if porcentaje >= 50: color_texto = "#ffbb33"
-    if porcentaje >= 100: color_texto = "#00C851"
+# --- UI Components ---
+
+def render_kpi_card(title, current, target):
+    progress = min(current / target, 1.0) if target > 0 else 0
+    pct = int(progress * 100)
+    
+    # Dynamic coloring based on performance
+    color = "#ff4444" # Red
+    if pct >= 50: color = "#ffbb33" # Orange
+    if pct >= 100: color = "#00C851" # Green
     
     with st.container(border=True):
-        st.caption(titulo)
+        st.caption(title)
         c1, c2 = st.columns([2, 1])
-        with c1:
-            st.markdown(f"<h2 style='margin:0;'>{valor} <small style='color:gray; font-size:14px'>/ {meta}</small></h2>", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"<h3 style='text-align:right; color:{color_texto}; margin:0;'>{porcentaje}%</h3>", unsafe_allow_html=True)
-        st.progress(progreso)
+        c1.markdown(f"<h2 style='margin:0;'>{current} <small style='color:#aaa; font-size:0.5em'>/ {target}</small></h2>", unsafe_allow_html=True)
+        c2.markdown(f"<h3 style='text-align:right; color:{color}; margin:0;'>{pct}%</h3>", unsafe_allow_html=True)
+        st.progress(progress)
 
-# --- 5. VISTA PRINCIPAL ---
+def render_clock_widget():
+    now_et = datetime.now(TZ_ET)
+    now_bo = datetime.now(TZ_BO)
+    now_co = datetime.now(TZ_CO)
+    
+    st.markdown(f"""
+        <div style='text-align: right; color: #444; font-family: monospace; line-height: 1.2;'>
+            <div style='font-weight: bold; color: #222;'>ET  {now_et.strftime('%H:%M')}</div>
+            <div style='color: #666; font-size: 0.9em;'>BOL {now_bo.strftime('%H:%M')}</div>
+            <div style='color: #666; font-size: 0.9em;'>COL {now_co.strftime('%H:%M')}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+# --- Main View ---
+
 def show():
     supabase = init_connection()
+    
+    # 1. Time & Context Setup
+    now_et = datetime.now(TZ_ET)
+    today = now_et.date()
+    
+    # Date Anchors
+    start_of_week = today - timedelta(days=today.weekday())
+    start_of_month = today.replace(day=1)
+    # Full datetime for DB filtering (Beginning of Month UTC conversion handled later or implicitly)
+    start_of_month_utc = datetime.combine(start_of_month, datetime.min.time()).replace(tzinfo=TZ_ET).astimezone(pytz.utc).isoformat()
 
-    # A. TIEMPO
-    zona_et = pytz.timezone('US/Eastern')
-    zona_bo = pytz.timezone('America/La_Paz')
-    zona_co = pytz.timezone('America/Bogota')
-    
-    ahora_et = datetime.now(zona_et)
-    ahora_bo = datetime.now(zona_bo)
-    ahora_co = datetime.now(zona_co)
-    
-    # Variables clave para el resto del script (se basan en ET)
-    hoy = ahora_et.date()
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
-    inicio_mes_dt = hoy.replace(day=1)
-    inicio_mes_full = datetime.combine(inicio_mes_dt, datetime.min.time()).replace(tzinfo=zona_et)
-    
-    nombre = st.session_state.get("real_name", "Agente")
-    
-    h1, h2 = st.columns([3, 1])
-    with h1:
-        st.markdown(f"### 🚀 Hola, {nombre}")
-    with h2:
-        # Bloque de Relojes Apilados
-        st.markdown(
-            f"""
-            <div style='text-align: right; color: #444; line-height: 1.4;'>
-                <div style='font-weight: bold; font-size: 16px;'>ET {ahora_et.strftime('%I:%M %p')} </div>
-                <div style='font-size: 13px; color: #666;'>BOL {ahora_bo.strftime('%I:%M %p')} </div>
-                <div style='font-size: 13px; color: #666;'>COL {ahora_co.strftime('%I:%M %p')} </div>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-    
-    st.markdown("---")
+    agent_name = st.session_state.get("real_name", "Agent")
 
-    # B. CALCULADORA DE FECHAS (ALGORITMO NUEVO)
+    # 2. Header
+    c_head, c_clock = st.columns([3, 1])
+    with c_head:
+        st.markdown(f"### 🚀 Workspace: {agent_name}")
+    with c_clock:
+        render_clock_widget()
+    
+    st.divider()
+
+    # 3. Date Calculator Module
     st.subheader("📅 First Payment Dates")
     
-    # Usamos la nueva función con 3 y 5 días
-    f_std = calcular_fecha_pago(ahora_et, 3) 
-    f_ca = calcular_fecha_pago(ahora_et, 5)  
-    f_max = ahora_et + timedelta(days=35)    # Max Date sigue siendo calendario
+    date_std = calculate_business_date(now_et, 3) 
+    date_ext = calculate_business_date(now_et, 5)  
+    date_max = now_et + timedelta(days=35)
 
-    col_d1, col_d2, col_d3 = st.columns(3)
-    css_fecha = "margin: 0; font-size: 1.6rem; font-weight: 700; color: #2C3E50;"
-    css_sub = "margin: 0; color: #7F8C8D; font-size: 0.85rem;"
-
-    with col_d1:
-        with st.container(border=True):
-            st.markdown(f"<p style='{css_sub}'>Standard (3 Business Days)</p>", unsafe_allow_html=True)
-            st.markdown(f"<p style='{css_fecha}'>{f_std.strftime('%b %d')}</p>", unsafe_allow_html=True)
+    cols = st.columns(3)
+    card_style = "font-size: 1.4rem; font-weight: 700; color: #2C3E50; margin: 0;"
     
-    with col_d2:
-        with st.container(border=True):
-            st.markdown(f"<p style='{css_sub}'>California (5 Business Days)</p>", unsafe_allow_html=True)
-            st.markdown(f"<p style='{css_fecha}'>{f_ca.strftime('%b %d')}</p>", unsafe_allow_html=True)
+    metrics = [
+        ("Standard (3 Days)", date_std, "%b %d"),
+        ("California (5 Days)", date_ext, "%b %d"),
+        ("⛔ Max Date (35 Days)", date_max, "%m/%d/%Y")
+    ]
 
-    with col_d3:
-        with st.container(border=True):
-            st.markdown(f"<p style='{css_sub}'>⛔ Max Date (35 Days)</p>", unsafe_allow_html=True)
-            st.markdown(f"<p style='{css_fecha}'>{f_max.strftime('%m/%d/%Y')}</p>", unsafe_allow_html=True)
+    for col, (label, val, fmt) in zip(cols, metrics):
+        with col:
+            with st.container(border=True):
+                st.caption(label)
+                st.markdown(f"<p style='{card_style}'>{val.strftime(fmt)}</p>", unsafe_allow_html=True)
 
     st.write("") 
 
-    # C. DASHBOARD
-    agente_filtro = st.session_state.get("real_name", "")
-    df_raw = cargar_logs_del_mes(supabase, agente_filtro, inicio_mes_full)
+    # 4. Performance Dashboard
+    df_logs = fetch_agent_metrics(supabase, agent_name, start_of_month_utc)
     
-    if not df_raw.empty and 'created_at' in df_raw.columns:
-        df_raw['created_at'] = pd.to_datetime(df_raw['created_at'])
-        df_raw['fecha_et'] = df_raw['created_at'].apply(
-            lambda x: x.tz_convert(zona_et) if x.tzinfo else x.tz_localize('UTC').tz_convert(zona_et)
-        )
-        df_raw['fecha_date'] = df_raw['fecha_et'].dt.date
+    # Pre-process dates if data exists
+    if not df_logs.empty and 'created_at' in df_logs.columns:
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'])
+        # Normalize to ET date for filtering
+        df_logs['date_et'] = df_logs['created_at'].apply(
+            lambda x: x.tz_convert(TZ_ET) if x.tzinfo else x.tz_localize('UTC').tz_convert(TZ_ET)
+        ).dt.date
 
-    st.subheader("📊 Tu Rendimiento")
-    tab_hoy, tab_semana, tab_mes = st.tabs(["📅 Hoy", "🗓️ Esta Semana", "🏆 Este Mes"])
+    st.subheader("📊 Performance Tracker")
+    tabs = st.tabs(["📅 Today", "🗓️ This Week", "🏆 This Month"])
 
-    def render_tab_content(fecha_filtro, meta_ventas, tag):
-        if df_raw.empty:
-            df_filtered = pd.DataFrame(columns=['result'])
+    def _render_tab_metrics(filter_date, sales_target, tag):
+        if df_logs.empty:
+            subset = pd.DataFrame(columns=['result'])
         else:
-            df_filtered = df_raw[df_raw['fecha_date'] >= fecha_filtro]
+            subset = df_logs[df_logs['date_et'] >= filter_date]
         
-        total = len(df_filtered)
-        ventas = len(df_filtered[df_filtered['result'].str.contains('Completed', case=False, na=False)]) if total > 0 else 0
-        conversion = (ventas / total * 100) if total > 0 else 0
+        total_interactions = len(subset)
+        sales_count = len(subset[subset['result'].str.contains('Completed', case=False, na=False)]) if total_interactions > 0 else 0
+        conversion_rate = (sales_count / total_interactions * 100) if total_interactions > 0 else 0
 
-        c_metrics, c_chart = st.columns([1, 2])
+        c_kpi, c_viz = st.columns([1, 2])
         
-        with c_metrics:
-            tarjeta_progreso("Ventas", ventas, meta_ventas)
+        with c_kpi:
+            render_kpi_card("Completed Sales", sales_count, sales_target)
             st.write("")
-            m1, m2 = st.columns(2)
-            m1.metric("Notas", total)
-            m2.metric("Conv.", f"{conversion:.0f}%")
+            k1, k2 = st.columns(2)
+            k1.metric("Total Calls", total_interactions)
+            k2.metric("Conversion", f"{conversion_rate:.0f}%")
         
-        with c_chart:
-            if total > 0:
-                data_chart = df_filtered['result'].value_counts().reset_index()
-                data_chart.columns = ['Resultado', 'Cantidad']
-                chart = alt.Chart(data_chart).mark_bar(cornerRadius=4).encode(
-                    x=alt.X('Cantidad', title=None),
-                    y=alt.Y('Resultado', sort='-x', title=None),
-                    color=alt.Color('Resultado', legend=None, scale=alt.Scale(scheme='blues')),
-                    tooltip=['Resultado', 'Cantidad']
+        with c_viz:
+            if total_interactions > 0:
+                chart_data = subset['result'].value_counts().reset_index()
+                chart_data.columns = ['Result', 'Count']
+                
+                chart = alt.Chart(chart_data).mark_bar(cornerRadius=4).encode(
+                    x=alt.X('Count', title=None),
+                    y=alt.Y('Result', sort='-x', title=None),
+                    color=alt.Color('Result', legend=None, scale=alt.Scale(scheme='blues')),
+                    tooltip=['Result', 'Count']
                 ).properties(height=180)
-                st.altair_chart(chart + chart.mark_text(dx=5, align='left').encode(text='Cantidad'), use_container_width=True)
+                st.altair_chart(chart, use_container_width=True)
             else:
-                st.info(f"Sin actividad: {tag}")
+                st.info(f"No activity recorded for: {tag}")
 
-    with tab_hoy: render_tab_content(hoy, 5, "Hoy") 
-    with tab_semana: render_tab_content(inicio_semana, 25, "Semana") 
-    with tab_mes: render_tab_content(inicio_mes_dt, 100, "Mes") 
+    with tabs[0]: _render_tab_metrics(today, 5, "Today")
+    with tabs[1]: _render_tab_metrics(start_of_week, 25, "This Week")
+    with tabs[2]: _render_tab_metrics(start_of_month, 100, "This Month")
 
-    # D. NOTICIAS
-    st.markdown("---")
-    st.subheader("🔔 Updates")
-    df_news = cargar_noticias_activas(supabase)
+    # 5. News Feed
+    st.divider()
+    df_news = fetch_active_news(supabase)
+    
     if not df_news.empty:
+        st.subheader("🔔 Team Updates")
         for _, row in df_news.iterrows():
             cat = str(row.get('category', 'INFO')).upper()
-            title, msg, date = row.get('title', ''), row.get('message', ''), row.get('date', '')
-            color_map = {'CRITICAL': ('#FFEBEE', '#D32F2F', '🚨'), 'WARNING': ('#FFF8E1', '#FFA000', '⚠️'), 'INFO': ('#E3F2FD', '#1976D2', 'ℹ️')}
-            bg, border, icon = color_map.get(cat, color_map['INFO'])
-            st.markdown(f"<div style='background-color: {bg}; border-left: 4px solid {border}; padding: 12px; border-radius: 4px; margin-bottom: 10px;'><div style='color: #666; font-size: 12px; margin-bottom: 4px;'>{date}</div><div style='font-weight: bold; color: #333; margin-bottom: 4px;'>{icon} {title}</div><div style='color: #444; font-size: 14px;'>{msg}</div></div>", unsafe_allow_html=True)
-    else:
-        st.info("✅ No hay noticias nuevas.")
+            theme = {
+                'CRITICAL': {'bg': '#FFEBEE', 'bd': '#D32F2F', 'icon': '🚨'},
+                'WARNING':  {'bg': '#FFF8E1', 'bd': '#FFA000', 'icon': '⚠️'},
+                'INFO':     {'bg': '#F1F5F9', 'bd': '#475569', 'icon': 'ℹ️'}
+            }.get(cat, {'bg': '#F1F5F9', 'bd': '#475569', 'icon': 'ℹ️'})
+            
+            st.markdown(f"""
+                <div style='background-color: {theme['bg']}; border-left: 4px solid {theme['bd']}; padding: 12px; border-radius: 4px; margin-bottom: 10px;'>
+                    <div style='display:flex; justify-content:space-between; color: #666; font-size: 0.8em; margin-bottom: 4px;'>
+                        <span>{theme['icon']} <b>{row.get('title')}</b></span>
+                        <span>{row.get('date')}</span>
+                    </div>
+                    <div style='color: #334155; font-size: 0.95em;'>{row.get('message')}</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    show()
