@@ -1,80 +1,109 @@
-import streamlit as st
 import time
 import bcrypt
+import streamlit as st
 from datetime import datetime, timedelta
-from supabase import create_client
-# NO importamos stx aquí para no crear conflictos, lo recibimos como parámetro
+from supabase import create_client, Client
+
+# --- Infrastructure ---
 
 @st.cache_resource
-def init_connection():
+def init_connection() -> Client:
+    """Singleton connection to Supabase."""
     try:
-        url = st.secrets["connections"]["supabase"]["URL"]
-        key = st.secrets["connections"]["supabase"]["KEY"]
-        return create_client(url, key)
-    except:
+        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
+        return create_client(creds["URL"], creds["KEY"])
+    except Exception:
         return None
 
-# AHORA RECIBE EL MANAGER COMO ARGUMENTO
-def show(cookie_manager):
-    st.markdown("""<style>.block-container { padding-top: 50px !important; }</style>""", unsafe_allow_html=True)
+# --- Auth Logic ---
 
-    col_izq, col_centro, col_der = st.columns([3, 2, 3])
-
-    with col_centro:
-        st.markdown("<h1 style='text-align: center; font-size: 50px;'>🏦</h1>", unsafe_allow_html=True)
-        
-        with st.container(border=True):
-            st.markdown("<h2 style='text-align: center; color: #0F52BA;'>Acceso</h2>", unsafe_allow_html=True)
-            st.caption("Ingresa tus credenciales para continuar.")
-            
-            usuario = st.text_input("Usuario", placeholder="ej: jperez").strip()
-            password = st.text_input("Contraseña", type="password").strip()
-            st.write("") 
-            
-            if st.button("Entrar al Sistema", type="primary", use_container_width=True):
-                if usuario and password:
-                    autenticar_usuario(usuario, password, cookie_manager)
-                else:
-                    st.warning("⚠️ Faltan datos.")
-
-        st.markdown("<div style='text-align: center; color: #888; font-size: 12px; margin-top: 10px;'>🔒 Conexión Segura</div>", unsafe_allow_html=True)
-
-def autenticar_usuario(user_input, pass_input, cookie_manager):
+def authenticate(username: str, password: str, cookie_manager):
+    """
+    Validates credentials against DB, checks bcrypt hash, and sets session/cookies.
+    """
     supabase = init_connection()
     if not supabase:
-        st.error("🚨 Error de conexión.")
+        st.error("Service unavailable (DB Connection).")
         return
 
     try:
-        res = supabase.table("Users").select("*").eq("username", user_input).execute()
+        # Fetch user record
+        res = supabase.table("Users").select("*").eq("username", username).execute()
         
-        if res.data:
-            user_data = res.data[0]
-            if not user_data.get('active', True):
-                st.error("🚫 Cuenta desactivada.")
-                return
+        if not res.data:
+            st.error("Invalid credentials.")
+            return
 
-            try:
-                if bcrypt.checkpw(pass_input.encode('utf-8'), user_data['password'].encode('utf-8')):
-                    # 1. Sesión en RAM
-                    st.session_state.logged_in = True
-                    st.session_state.username = user_data['username']
-                    st.session_state.real_name = user_data['name']
-                    st.session_state.role = user_data['role']
-                    
-                    # 2. Sesión en Cookie (1 DÍA)
-                    expire = datetime.now() + timedelta(days=1)
-                    cookie_manager.set('cordoba_user', user_data['username'], expires_at=expire)
-                    
-                    st.toast("✅ Acceso concedido.", icon="🔓")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("❌ Contraseña incorrecta.")
-            except ValueError:
-                st.error("⚠️ Error de seguridad.")
-        else:
-            st.error("❌ Usuario no encontrado.")
+        user_record = res.data[0]
+
+        # Check account status
+        if not user_record.get('active', True):
+            st.warning("Account is disabled. Contact Admin.")
+            return
+
+        # Verify Password (Bcrypt)
+        try:
+            if bcrypt.checkpw(password.encode('utf-8'), user_record['password'].encode('utf-8')):
+                # 1. Update Session State (RAM)
+                st.session_state.update({
+                    "logged_in": True,
+                    "username": user_record['username'],
+                    "real_name": user_record['name'],
+                    "role": user_record['role']
+                })
+                
+                # 2. Set Persistence Cookie (1 Day TTL)
+                expiry = datetime.now() + timedelta(days=1)
+                cookie_manager.set('cordoba_user', user_record['username'], expires_at=expiry)
+                
+                st.toast("Login successful", icon="🔓")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("Invalid credentials.")
+        except ValueError:
+            st.error("Security error during hash verification.")
             
     except Exception as e:
-        st.error(f"Error: {e}")
+        # Log error to console for debugging, show generic error to user
+        print(f"[Auth Error] {e}")
+        st.error("Authentication failed due to internal error.")
+
+# --- UI Rendering ---
+
+def show(cookie_manager):
+    # CSS Override specifically for Login alignment
+    st.markdown("""
+        <style>
+            .block-container { padding-top: 3rem !important; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Centered Layout using Columns
+    _, col_center, _ = st.columns([1, 1, 1])
+
+    with col_center:
+        st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>🏦</h1>", unsafe_allow_html=True)
+        
+        with st.container(border=True):
+            st.markdown("<h3 style='text-align: center; color: #1F2937;'>Workspace Access</h3>", unsafe_allow_html=True)
+            st.caption("Please enter your credentials.")
+            
+            with st.form("login_form"):
+                user_in = st.text_input("Username", placeholder="e.g. jdoe").strip()
+                pass_in = st.text_input("Password", type="password").strip()
+                
+                # Submit Button
+                submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if user_in and pass_in:
+                        authenticate(user_in, pass_in, cookie_manager)
+                    else:
+                        st.warning("Username and password are required.")
+
+        st.markdown(
+            "<div style='text-align: center; color: #9CA3AF; font-size: 0.8em; margin-top: 1rem;'>"
+            "🔒 Secure Connection (256-bit SSL)</div>", 
+            unsafe_allow_html=True
+        )
