@@ -1,10 +1,18 @@
+import time
 import streamlit as st
 import extra_streamlit_components as stx
-import time
 from supabase import create_client
-import estilos  # <--- 1. Importamos tu nuevo archivo de diseño
 
-# 1. CONFIGURACIÓN DE PÁGINA
+# Módulos internos
+import estilos
+# Manejo de errores en imports para evitar crash si faltan archivos
+try:
+    from vistas import login, inicio, buscador, notas, updates, perfil, admin_panel
+except ImportError as e:
+    st.error(f"Error cargando módulos de vista: {e}")
+    st.stop()
+
+# Configuración inicial de la página
 st.set_page_config(
     page_title="Cordoba Workspace", 
     page_icon="🏢", 
@@ -12,83 +20,87 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 2. CARGAMOS EL ESTILO CORPORATIVO ---
-# Esto reemplaza al bloque st.markdown(<style>...) que tenías antes.
+# Carga de estilos CSS globales
 estilos.cargar_css()
 
-# --- CONEXIÓN SUPABASE ---
+# --- Configuración y Conexión ---
+
 @st.cache_resource
 def init_connection():
+    """Establece la conexión con Supabase usando secretos."""
     try:
-        if "connections" in st.secrets and "supabase" in st.secrets["connections"]:
-            url = st.secrets["connections"]["supabase"]["URL"]
-            key = st.secrets["connections"]["supabase"]["KEY"]
-        else:
-            url = st.secrets["URL"]
-            key = st.secrets["KEY"]
-        return create_client(url, key)
-    except:
+        # Soporte dual para entorno local (secrets.toml) y despliegue
+        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
+        return create_client(creds["URL"], creds["KEY"])
+    except Exception as e:
+        # En producción, esto debería loguearse en un archivo
         return None
 
-# --- GESTIÓN DE ESTADO ---
-if "logged_in" not in st.session_state: st.session_state.logged_in = False
-if "real_name" not in st.session_state: st.session_state.real_name = ""
-if "role" not in st.session_state: st.session_state.role = "" 
-if "username" not in st.session_state: st.session_state.username = ""
+def init_session_state():
+    """Inicializa las variables de sesión requeridas."""
+    defaults = {
+        "logged_in": False,
+        "real_name": "",
+        "role": "",
+        "username": ""
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-# --- IMPORTADOR ---
-try:
-    from vistas import login, inicio, buscador, notas, updates, perfil, admin_panel
-except ImportError as e:
-    st.error(f"🚨 Error Crítico: {e}")
-    st.stop()
+# Inicializamos estado
+init_session_state()
 
-# ==========================================
-# 🍪 GESTIÓN DE COOKIES
-# ==========================================
+# Gestor de Cookies
 cookie_manager = stx.CookieManager(key="cordoba_cookies")
 
 def intentar_reconexion():
-    # Solo intentamos si no estamos logueados en RAM
-    if not st.session_state.logged_in:
-        
-        # Esperamos un momento para asegurar que el componente cargue (fix F5)
-        time.sleep(0.1)
-        
-        cookies = cookie_manager.get_all()
-        cookie_user = cookies.get("cordoba_user") if cookies else None
-        
-        if cookie_user:
-            supabase = init_connection()
-            try:
-                # Validamos que el usuario siga existiendo y esté activo
-                res = supabase.table("Users").select("*").eq("username", cookie_user).execute()
-                if res.data:
-                    user_data = res.data[0]
-                    if user_data.get('active', True):
-                        st.session_state.logged_in = True
-                        st.session_state.username = user_data['username']
-                        st.session_state.real_name = user_data['name']
-                        st.session_state.role = user_data['role']
-                        st.rerun()
-            except Exception as e:
-                print(f"Error reconexión: {e}")
+    """
+    Intenta recuperar la sesión usando la cookie almacenada 
+    si el usuario no está logueado en memoria.
+    """
+    if st.session_state.logged_in:
+        return
 
-# ==========================================
-# APP PRINCIPAL
-# ==========================================
+    # Pequeño delay para asegurar montaje del componente de cookies
+    time.sleep(0.1)
+    
+    cookies = cookie_manager.get_all()
+    if not cookies or "cordoba_user" not in cookies:
+        return
+
+    user_cookie = cookies.get("cordoba_user")
+    supabase = init_connection()
+    
+    if supabase:
+        try:
+            res = supabase.table("Users").select("*").eq("username", user_cookie).execute()
+            if res.data:
+                user = res.data[0]
+                if user.get('active', True):
+                    st.session_state.update({
+                        "logged_in": True,
+                        "username": user['username'],
+                        "real_name": user['name'],
+                        "role": user['role']
+                    })
+                    st.rerun()
+        except Exception:
+            pass # Fallo silencioso en reconexión
+
+# --- Lógica Principal ---
+
 def main():
-    # 1. Intentar revivir sesión
     intentar_reconexion()
 
-    # 2. Si NO estamos logueados -> Mostrar Login
+    # Router de autenticación
     if not st.session_state.logged_in:
         login.show(cookie_manager)
         return
 
-    # 3. Si SÍ estamos logueados -> Mostrar App
+    # Sidebar y Navegación
     with st.sidebar:
-        # Aquí el logo se inyecta automáticamente desde estilos.py si existe la imagen
+        # Espaciador para logo (inyectado por CSS/Estilos)
         st.write("") 
         
         with st.container(border=True):
@@ -98,39 +110,44 @@ def main():
         
         st.markdown("---")
         
-        # MENU SEGÚN ROL
+        # Definición de rutas según permisos
         if st.session_state.role == "Admin":
-            opciones = ["🎛️ Panel Admin", "🏠 Dashboard Personal", "📝 Generador Notas", "🔍 Buscar Bancos", "⚙️ Mi Perfil"]
+            rutas = {
+                "🎛️ Panel Admin": admin_panel,
+                "🏠 Dashboard Personal": inicio,
+                "📝 Generador Notas": notas,
+                "🔍 Buscar Bancos": buscador,
+                "⚙️ Mi Perfil": perfil
+            }
         else:
-            opciones = ["🏠 Inicio", "📝 Generador Notas", "🔍 Buscar Bancos", "🔔 Noticias", "⚙️ Mi Perfil"]
+            rutas = {
+                "🏠 Inicio": inicio,
+                "📝 Generador Notas": notas,
+                "🔍 Buscar Bancos": buscador,
+                "🔔 Noticias": updates,
+                "⚙️ Mi Perfil": perfil
+            }
 
-        selection = st.radio("Ir a:", opciones, label_visibility="collapsed")
+        opcion = st.radio("Navegación:", list(rutas.keys()), label_visibility="collapsed")
         st.markdown("---")
         
-        # 🔴 LOGOUT
+        # Logout logic
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
             cookie_manager.delete("cordoba_user")
-            st.session_state.logged_in = False
-            st.session_state.role = ""
-            st.session_state.real_name = ""
-            st.session_state.username = ""
+            # Reset de sesión manual
+            for key in ["logged_in", "role", "real_name", "username"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
             time.sleep(0.5) 
             st.rerun()
 
-    # ROUTER DE VISTAS
-    if selection == "🎛️ Panel Admin":
-        if st.session_state.role == "Admin": admin_panel.show()
-        else: st.error("⛔ Acceso Restringido")
-    elif selection in ["🏠 Inicio", "🏠 Dashboard Personal"]:
-        inicio.show()
-    elif selection == "📝 Generador Notas":
-        notas.show()
-    elif selection == "🔍 Buscar Bancos":
-        buscador.show()
-    elif selection == "🔔 Noticias":
-        updates.show()
-    elif selection == "⚙️ Mi Perfil":
-        perfil.show()
+    # Renderizado de vista seleccionada
+    if opcion in rutas:
+        if opcion == "🎛️ Panel Admin" and st.session_state.role != "Admin":
+            st.error("Acceso denegado.")
+        else:
+            rutas[opcion].show()
 
 if __name__ == "__main__":
     main()
