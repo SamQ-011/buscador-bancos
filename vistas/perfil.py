@@ -1,103 +1,112 @@
-import streamlit as st
-import bcrypt
 import time
-from supabase import create_client
+import bcrypt
+import streamlit as st
+from supabase import create_client, Client
 
-# --- 1. CONEXIÓN SEGURA (Patrón Unificado) ---
+# --- Infrastructure ---
+
 @st.cache_resource
-def init_connection():
+def init_connection() -> Client:
+    """Singleton connection to Supabase."""
     try:
-        url = st.secrets["connections"]["supabase"]["URL"]
-        key = st.secrets["connections"]["supabase"]["KEY"]
-        return create_client(url, key)
-    except:
+        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
+        return create_client(creds["URL"], creds["KEY"])
+    except Exception:
         return None
 
-# --- 2. LÓGICA DE SEGURIDAD ---
-def validar_y_actualizar(username, pass_actual, pass_nueva):
+# --- Backend Logic ---
+
+def update_credentials(username: str, current_pass: str, new_pass: str) -> bool:
+    """
+    Verifies current password hash and updates DB with new bcrypt hash.
+    """
     supabase = init_connection()
     if not supabase:
-        st.error("🔌 Error de conexión con la base de datos.")
+        st.error("Service unavailable.")
         return False
 
     try:
-        # A. Traer el hash actual del usuario
-        response = supabase.table("Users").select("password").eq("username", username).execute()
+        # 1. Fetch current hash
+        res = supabase.table("Users").select("password").eq("username", username).execute()
         
-        if not response.data:
-            st.error("❌ Usuario no encontrado.")
+        if not res.data:
+            st.error("User record not found.")
             return False
             
-        hash_db = response.data[0]['password']
+        stored_hash = res.data[0]['password']
 
-        # B. Verificar que la contraseña actual sea correcta
-        if not bcrypt.checkpw(pass_actual.encode('utf-8'), hash_db.encode('utf-8')):
-            st.error("❌ La contraseña actual es incorrecta.")
+        # 2. Verify current credentials
+        if not bcrypt.checkpw(current_pass.encode('utf-8'), stored_hash.encode('utf-8')):
+            st.error("Current password incorrect.")
             return False
 
-        # C. Encriptar la NUEVA contraseña
-        nuevo_hash = bcrypt.hashpw(pass_nueva.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-        # D. Actualizar en Supabase
-        supabase.table("Users").update({"password": nuevo_hash}).eq("username", username).execute()
+        # 3. Generate new hash and update
+        new_hash = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
+        supabase.table("Users").update({"password": new_hash}).eq("username", username).execute()
         return True
 
     except Exception as e:
-        st.error(f"⚠️ Error técnico: {e}")
+        st.error(f"Update failed: {e}")
         return False
 
-# --- 3. INTERFAZ (VISTA) ---
+# --- UI Rendering ---
+
 def show():
-    st.title("⚙️ Mi Perfil")
-    st.caption("Gestión de cuenta y seguridad.")
+    st.title("⚙️ User Profile")
+    st.caption("Account management & Security settings.")
     
-    # Datos de Sesión
-    usuario = st.session_state.get("username", "N/A")
-    nombre = st.session_state.get("real_name", "Usuario")
-    rol = st.session_state.get("role", "N/A")
+    # Session Data
+    username = st.session_state.get("username", "N/A")
+    full_name = st.session_state.get("real_name", "Unknown User")
+    role = st.session_state.get("role", "N/A")
 
-    # --- TARJETA DE INFORMACIÓN ---
+    # Profile Header
     with st.container(border=True):
-        c1, c2 = st.columns([1, 4])
-        with c1:
-            st.markdown("# 👤") # Avatar simple
-        with c2:
-            st.markdown(f"### {nombre}")
-            st.markdown(f"**Usuario:** `{usuario}` &nbsp; | &nbsp; **Rol:** `{rol}`")
-            st.caption("Para cambiar tu nombre o rol, contacta a un Administrador.")
+        c_avatar, c_info = st.columns([1, 5])
+        with c_avatar:
+            st.markdown("<h1 style='text-align: center;'>👤</h1>", unsafe_allow_html=True)
+        with c_info:
+            st.markdown(f"### {full_name}")
+            st.markdown(f"**Username:** `{username}` &nbsp; | &nbsp; **Role:** `{role}`")
+            st.caption("Contact IT Admin for role or name changes.")
 
-    st.markdown("---")
+    st.divider()
 
-    # --- FORMULARIO DE CAMBIO DE CLAVE ---
-    st.subheader("🔐 Seguridad")
+    # Security Module
+    st.subheader("🔐 Security")
     
-    with st.form("form_cambio_clave"):
-        st.write("Cambiar Contraseña")
+    with st.form("security_form"):
+        st.write("**Change Password**")
         
-        p_actual = st.text_input("Contraseña Actual", type="password")
-        p_nueva = st.text_input("Nueva Contraseña", type="password", help="Mínimo 6 caracteres")
-        p_confirm = st.text_input("Confirmar Nueva Contraseña", type="password")
+        col_cur, col_new = st.columns(2)
+        current_pw = col_cur.text_input("Current Password", type="password")
+        
+        new_pw = col_new.text_input("New Password", type="password", help="Min. 6 characters")
+        confirm_pw = col_new.text_input("Confirm New Password", type="password")
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        if st.form_submit_button("Actualizar Credenciales", type="primary"):
-            # Validaciones Frontend
-            if not p_actual or not p_nueva:
-                st.warning("⚠️ Debes llenar todos los campos.")
-            elif p_nueva != p_confirm:
-                st.error("❌ Las nuevas contraseñas no coinciden.")
-            elif len(p_nueva) < 6:
-                st.warning("⚠️ La contraseña nueva es muy corta (mínimo 6).")
-            else:
-                # Lógica de Backend
-                exito = validar_y_actualizar(usuario, p_actual, p_nueva)
-                
-                if exito:
-                    st.success("✅ ¡Contraseña actualizada correctamente!")
-                    st.balloons()
-                    time.sleep(1.5)
-                    st.rerun()
+        if st.form_submit_button("Update Credentials", type="primary"):
+            # Frontend Validation
+            if not current_pw or not new_pw:
+                st.warning("All fields are required.")
+                return
+
+            if new_pw != confirm_pw:
+                st.error("New passwords do not match.")
+                return
+
+            if len(new_pw) < 6:
+                st.warning("Password too short (min 6 chars).")
+                return
+
+            # Backend Call
+            if update_credentials(username, current_pw, new_pw):
+                st.success("Password updated successfully.")
+                st.balloons()
+                time.sleep(1.5)
+                st.rerun()
 
 if __name__ == "__main__":
     show()
