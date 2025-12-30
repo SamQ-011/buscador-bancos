@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 from datetime import datetime
-from supabase import create_client, Client
+from sqlalchemy import text
 
 # --- Configuration ---
 
@@ -13,27 +13,27 @@ CATEGORY_THEMES = {
 
 # --- Infrastructure ---
 
-@st.cache_resource
-def init_connection() -> Client:
-    """Singleton connection to Supabase."""
+def init_connection():
+    """
+    Conexión a PostgreSQL Local (Docker) usando el conector nativo de Streamlit.
+    """
     try:
-        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
-        return create_client(creds["URL"], creds["KEY"])
-    except Exception:
+        return st.connection("local_db", type="sql")
+    except Exception as e:
+        st.error(f"Error conectando a BD: {e}")
         return None
 
 # --- Data Layer ---
 
-def fetch_updates(supabase: Client) -> pd.DataFrame:
-    """Fetches active broadcast messages ordered by date."""
-    if not supabase: return pd.DataFrame()
+def fetch_updates(conn) -> pd.DataFrame:
+    """Fetches active broadcast messages ordered by date (SQL)."""
+    if not conn: return pd.DataFrame()
     
     try:
-        res = supabase.table("Updates").select("*")\
-            .eq("active", True)\
-            .order("date", desc=True)\
-            .execute()
-        return pd.DataFrame(res.data)
+        # SQL Query directo
+        query = 'SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC'
+        # Usamos un cache TTL pequeño (60s) para no saturar la BD si hay muchos usuarios
+        return conn.query(query, ttl=60)
     except Exception as e:
         # Log to console in production
         print(f"[Updates Fetch Error] {e}")
@@ -51,9 +51,13 @@ def _render_update_card(row: pd.Series):
 
     # Date formatting
     try:
-        date_str = datetime.strptime(raw_date, '%Y-%m-%d').strftime('%b %d, %Y')
-    except ValueError:
-        date_str = raw_date
+        # Intentamos parsear si es string, si viene como objeto date de SQL lo convertimos
+        if isinstance(raw_date, str):
+            date_str = datetime.strptime(raw_date, '%Y-%m-%d').strftime('%b %d, %Y')
+        else:
+            date_str = raw_date.strftime('%b %d, %Y')
+    except (ValueError, AttributeError):
+        date_str = str(raw_date)
 
     # Theme resolution
     theme = CATEGORY_THEMES.get(cat, CATEGORY_THEMES['INFO'])
@@ -96,7 +100,7 @@ def show():
     # Header & Controls
     c_head, c_act = st.columns([4, 1])
     with c_head:
-        st.title("📢 News Center")
+        st.title("📢 Updates Center")
         st.caption("Official communications and operational updates.")
     with c_act:
         st.write("") # Spacer
@@ -107,8 +111,8 @@ def show():
     st.divider()
 
     # Data Loading
-    supabase = init_connection()
-    df = fetch_updates(supabase)
+    conn = init_connection()
+    df = fetch_updates(conn)
 
     if df.empty:
         st.info("No active announcements at this time.")
@@ -127,7 +131,7 @@ def show():
             label_visibility="collapsed"
         )
 
-    # Filtering Logic
+    # Filtering Logic (Pandas - Igual que antes)
     if search_query:
         # Case-insensitive search on Title OR Message
         mask = df['title'].str.contains(search_query, case=False, na=False) | \

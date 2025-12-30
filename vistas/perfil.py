@@ -1,49 +1,54 @@
 import time
 import bcrypt
 import streamlit as st
-from supabase import create_client, Client
+from sqlalchemy import text
 
 # --- Infrastructure ---
 
-@st.cache_resource
-def init_connection() -> Client:
-    """Singleton connection to Supabase."""
+def init_connection():
+    """
+    Conexión a PostgreSQL Local (Docker).
+    """
     try:
-        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
-        return create_client(creds["URL"], creds["KEY"])
-    except Exception:
+        return st.connection("local_db", type="sql")
+    except Exception as e:
+        st.error(f"Service unavailable: {e}")
         return None
 
 # --- Backend Logic ---
 
 def update_credentials(username: str, current_pass: str, new_pass: str) -> bool:
     """
-    Verifies current password hash and updates DB with new bcrypt hash.
+    Verifies current password hash and updates DB with new bcrypt hash (SQL).
     """
-    supabase = init_connection()
-    if not supabase:
-        st.error("Service unavailable.")
-        return False
+    conn = init_connection()
+    if not conn: return False
 
     try:
-        # 1. Fetch current hash
-        res = supabase.table("Users").select("password").eq("username", username).execute()
+        # 1. Obtener hash actual
+        query = text('SELECT password FROM "Users" WHERE username = :u')
+        df = conn.query(query, params={"u": username}, ttl=0)
         
-        if not res.data:
+        if df.empty:
             st.error("User record not found.")
             return False
             
-        stored_hash = res.data[0]['password']
+        stored_hash = df.iloc[0]['password']
 
-        # 2. Verify current credentials
+        # 2. Verificar contraseña actual
         if not bcrypt.checkpw(current_pass.encode('utf-8'), stored_hash.encode('utf-8')):
             st.error("Current password incorrect.")
             return False
 
-        # 3. Generate new hash and update
+        # 3. Generar nuevo hash y actualizar
         new_hash = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
-        supabase.table("Users").update({"password": new_hash}).eq("username", username).execute()
+        update_sql = text('UPDATE "Users" SET password = :p WHERE username = :u')
+        
+        with conn.session as s:
+            s.execute(update_sql, {"p": new_hash, "u": username})
+            s.commit()
+            
         return True
 
     except Exception as e:

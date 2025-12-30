@@ -1,8 +1,9 @@
 streamlit
 pandas
 altair
-supabase
+sqlalchemy
+psycopg2-binary
 bcrypt
+extra_streamlit_components
+xlsxwriter
 pytz
-extra-streamlit-components
-

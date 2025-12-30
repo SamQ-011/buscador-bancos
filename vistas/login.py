@@ -1,60 +1,72 @@
 import time
 import bcrypt
+import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
-from supabase import create_client, Client
+from sqlalchemy import text
 
 # --- Infrastructure ---
 
-@st.cache_resource
-def init_connection() -> Client:
-    """Singleton connection to Supabase."""
+def init_connection():
+    """
+    Conexión a PostgreSQL Local (Docker).
+    """
     try:
-        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
-        return create_client(creds["URL"], creds["KEY"])
-    except Exception:
+        return st.connection("local_db", type="sql")
+    except Exception as e:
+        st.error(f"Service unavailable (DB Connection): {e}")
         return None
 
 # --- Auth Logic ---
 
 def authenticate(username: str, password: str, cookie_manager):
     """
-    Validates credentials against DB, checks bcrypt hash, and sets session/cookies.
+    Validates credentials against DB (SQL), checks bcrypt hash, and sets session/cookies.
     """
-    supabase = init_connection()
-    if not supabase:
-        st.error("Service unavailable (DB Connection).")
-        return
+    conn = init_connection()
+    if not conn: return
 
     try:
-        # Fetch user record
-        res = supabase.table("Users").select("*").eq("username", username).execute()
+        # 1. Buscar usuario en la BD (Query SQL segura)
+        # Usamos :u como parámetro para evitar inyección SQL
+        query = 'SELECT * FROM "Users" WHERE username = :u'
+        df = conn.query(query, params={"u": username}, ttl=0)
         
-        if not res.data:
+        # 2. Verificar si existe
+        if df.empty:
             st.error("Invalid credentials.")
             return
 
-        user_record = res.data[0]
+        # Convertimos la primera fila a un diccionario para fácil acceso
+        user_record = df.iloc[0].to_dict()
 
-        # Check account status
+        # 3. Verificar estado de la cuenta
         if not user_record.get('active', True):
             st.warning("Account is disabled. Contact Admin.")
             return
 
-        # Verify Password (Bcrypt)
+        # 4. Verificar Contraseña (Bcrypt)
+        # La contraseña en BD viene como string, bcrypt necesita bytes
+        stored_hash = user_record['password'].encode('utf-8')
+        input_pass = password.encode('utf-8')
+
         try:
-            if bcrypt.checkpw(password.encode('utf-8'), user_record['password'].encode('utf-8')):
-                # 1. Update Session State (RAM)
+            if bcrypt.checkpw(input_pass, stored_hash):
+                # --- ÉXITO ---
+                
+                # A. Actualizar Session State (RAM)
                 st.session_state.update({
                     "logged_in": True,
+                    "user_id": int(user_record['id']),  # ID Relacional para logs
                     "username": user_record['username'],
                     "real_name": user_record['name'],
                     "role": user_record['role']
                 })
                 
-                # 2. Set Persistence Cookie (1 Day TTL)
+                # B. Actualizar Cookie Persistente (1 Día)
                 expiry = datetime.now() + timedelta(days=1)
-                cookie_manager.set('cordoba_user', user_record['username'], expires_at=expiry)
+                if cookie_manager:
+                    cookie_manager.set('cordoba_user', user_record['username'], expires_at=expiry)
                 
                 st.toast("Login successful", icon="🔓")
                 time.sleep(0.5)
@@ -65,21 +77,21 @@ def authenticate(username: str, password: str, cookie_manager):
             st.error("Security error during hash verification.")
             
     except Exception as e:
-        # Log error to console for debugging, show generic error to user
+        # Log error interno en consola, mostrar genérico al usuario
         print(f"[Auth Error] {e}")
         st.error("Authentication failed due to internal error.")
 
 # --- UI Rendering ---
 
 def show(cookie_manager):
-    # CSS Override specifically for Login alignment
+    # CSS para centrar el login visualmente
     st.markdown("""
         <style>
             .block-container { padding-top: 3rem !important; }
         </style>
     """, unsafe_allow_html=True)
 
-    # Centered Layout using Columns
+    # Layout centrado
     _, col_center, _ = st.columns([1, 1, 1])
 
     with col_center:
@@ -104,6 +116,6 @@ def show(cookie_manager):
 
         st.markdown(
             "<div style='text-align: center; color: #9CA3AF; font-size: 0.8em; margin-top: 1rem;'>"
-            "🔒 Secure Connection (256-bit SSL)</div>", 
+            "🔒 Secure Connection (Local Network)</div>", 
             unsafe_allow_html=True
         )

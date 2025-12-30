@@ -3,13 +3,12 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 from datetime import datetime, timedelta
-from supabase import create_client, Client
+from sqlalchemy import text
 
 # --- Configuration & Constants ---
 
 US_HOLIDAYS_2025 = {
-    (1, 1), (1, 20), (2, 17), (5, 26), (6, 19), 
-    (7, 4), (9, 1), (10, 13), (11, 11), (11, 27), (12, 25)
+    (1, 1), (5, 26), (9, 1), (11, 27), (12, 25)
 }
 
 TZ_ET = pytz.timezone('US/Eastern')
@@ -18,13 +17,14 @@ TZ_CO = pytz.timezone('America/Bogota')
 
 # --- Infrastructure ---
 
-@st.cache_resource
-def init_connection() -> Client:
-    """Singleton connection to Supabase."""
+def init_connection():
+    """
+    Conexión a PostgreSQL Local (Docker) usando el conector nativo.
+    """
     try:
-        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
-        return create_client(creds["URL"], creds["KEY"])
-    except Exception:
+        return st.connection("local_db", type="sql")
+    except Exception as e:
+        st.error(f"Error conectando a BD: {e}")
         return None
 
 # --- Business Logic (Dates) ---
@@ -53,46 +53,32 @@ def calculate_business_date(start_date, target_days):
             
     return current_date
 
-# --- Data Layer ---
+# --- Data Layer (SQL Version) ---
 
-def fetch_active_news(supabase: Client) -> pd.DataFrame:
-    if not supabase: return pd.DataFrame()
+def fetch_active_news(conn) -> pd.DataFrame:
+    if not conn: return pd.DataFrame()
     try:
-        res = supabase.table("Updates").select("*")\
-            .eq("active", True).order("date", desc=True).execute()
-        return pd.DataFrame(res.data)
+        # SQL Directo
+        query = 'SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC'
+        return conn.query(query, ttl=60)
     except Exception:
         return pd.DataFrame()
 
-def fetch_agent_metrics(supabase: Client, agent_name: str, start_date_utc: str) -> pd.DataFrame:
-    if not supabase: return pd.DataFrame()
+def fetch_agent_metrics(conn, agent_name: str, start_date_utc: str) -> pd.DataFrame:
+    if not conn: return pd.DataFrame()
     try:
-        res = supabase.table("Logs").select("*")\
-            .eq("agent", agent_name)\
-            .gte("created_at", start_date_utc)\
-            .order("created_at", desc=True)\
-            .execute()
-        return pd.DataFrame(res.data)
+        # SQL con parámetros seguros
+        query = text("""
+            SELECT * FROM "Logs" 
+            WHERE agent = :agent 
+            AND created_at >= :start_date 
+            ORDER BY created_at DESC
+        """)
+        return conn.query(query, params={"agent": agent_name, "start_date": start_date_utc}, ttl=0)
     except Exception:
         return pd.DataFrame()
 
 # --- UI Components ---
-
-def render_kpi_card(title, current, target):
-    progress = min(current / target, 1.0) if target > 0 else 0
-    pct = int(progress * 100)
-    
-    # Dynamic coloring based on performance
-    color = "#ff4444" # Red
-    if pct >= 50: color = "#ffbb33" # Orange
-    if pct >= 100: color = "#00C851" # Green
-    
-    with st.container(border=True):
-        st.caption(title)
-        c1, c2 = st.columns([2, 1])
-        c1.markdown(f"<h2 style='margin:0;'>{current} <small style='color:#aaa; font-size:0.5em'>/ {target}</small></h2>", unsafe_allow_html=True)
-        c2.markdown(f"<h3 style='text-align:right; color:{color}; margin:0;'>{pct}%</h3>", unsafe_allow_html=True)
-        st.progress(progress)
 
 def render_clock_widget():
     now_et = datetime.now(TZ_ET)
@@ -110,7 +96,8 @@ def render_clock_widget():
 # --- Main View ---
 
 def show():
-    supabase = init_connection()
+    # Inicializamos conexión SQL
+    conn = init_connection()
     
     # 1. Time & Context Setup
     now_et = datetime.now(TZ_ET)
@@ -119,10 +106,14 @@ def show():
     # Date Anchors
     start_of_week = today - timedelta(days=today.weekday())
     start_of_month = today.replace(day=1)
-    # Full datetime for DB filtering (Beginning of Month UTC conversion handled later or implicitly)
+    
+    # Preparamos fecha UTC para la consulta SQL
     start_of_month_utc = datetime.combine(start_of_month, datetime.min.time()).replace(tzinfo=TZ_ET).astimezone(pytz.utc).isoformat()
 
-    agent_name = st.session_state.get("real_name", "Agent")
+    agent_name = st.session_state.get("username")
+    if not agent_name:
+        st.error("⚠️ Sesión inválida. Por favor recarga la página (F5) o haz Login de nuevo.")
+        st.stop()
 
     # 2. Header
     c_head, c_clock = st.columns([3, 1])
@@ -144,9 +135,9 @@ def show():
     card_style = "font-size: 1.4rem; font-weight: 700; color: #2C3E50; margin: 0;"
     
     metrics = [
-        ("Standard (3 Days)", date_std, "%b %d"),
-        ("California (5 Days)", date_ext, "%b %d"),
-        ("⛔ Max Date (35 Days)", date_max, "%m/%d/%Y")
+        ("Standard (3 Business Days)", date_std, "%m/%d/%Y"),
+        ("California (5 Business Days)", date_ext, "%m/%d/%Y"),
+        ("⛔ Max Date (35 Calendar Days)", date_max, "%m/%d/%Y")
     ]
 
     for col, (label, val, fmt) in zip(cols, metrics):
@@ -158,60 +149,90 @@ def show():
     st.write("") 
 
     # 4. Performance Dashboard
-    df_logs = fetch_agent_metrics(supabase, agent_name, start_of_month_utc)
+    # Pasamos 'conn' en lugar de 'supabase'
+    df_logs = fetch_agent_metrics(conn, agent_name, start_of_month_utc)
     
     # Pre-process dates if data exists
     if not df_logs.empty and 'created_at' in df_logs.columns:
-        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'])
-        # Normalize to ET date for filtering
-        df_logs['date_et'] = df_logs['created_at'].apply(
-            lambda x: x.tz_convert(TZ_ET) if x.tzinfo else x.tz_localize('UTC').tz_convert(TZ_ET)
-        ).dt.date
-
+        # Aseguramos formato datetime (SQL devuelve datetime, pero Pandas a veces necesita ayuda con TZs)
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], utc=True)
+        # Convertimos a ET
+        df_logs['date_et'] = df_logs['created_at'].dt.tz_convert(TZ_ET).dt.date
+        
     st.subheader("📊 Performance Tracker")
     tabs = st.tabs(["📅 Today", "🗓️ This Week", "🏆 This Month"])
 
-    def _render_tab_metrics(filter_date, sales_target, tag):
+    def _render_tab_metrics(filter_date, tag):
         if df_logs.empty:
             subset = pd.DataFrame(columns=['result'])
         else:
-            subset = df_logs[df_logs['date_et'] >= filter_date]
+            subset = df_logs[df_logs['date_et'] >= filter_date].copy()
         
+        # --- Cálculo de Métricas ---
         total_interactions = len(subset)
-        sales_count = len(subset[subset['result'].str.contains('Completed', case=False, na=False)]) if total_interactions > 0 else 0
+        
+        # Filtrar Completados vs No Completados
+        completed_df = subset[subset['result'].str.contains('Completed', case=False, na=False) & ~subset['result'].str.contains('Not', case=False, na=False)]
+        sales_count = len(completed_df)
         conversion_rate = (sales_count / total_interactions * 100) if total_interactions > 0 else 0
 
-        c_kpi, c_viz = st.columns([1, 2])
-        
-        with c_kpi:
-            render_kpi_card("Completed Sales", sales_count, sales_target)
-            st.write("")
-            k1, k2 = st.columns(2)
-            k1.metric("Total Calls", total_interactions)
-            k2.metric("Conversion", f"{conversion_rate:.0f}%")
-        
-        with c_viz:
-            if total_interactions > 0:
-                chart_data = subset['result'].value_counts().reset_index()
-                chart_data.columns = ['Result', 'Count']
-                
-                chart = alt.Chart(chart_data).mark_bar(cornerRadius=4).encode(
-                    x=alt.X('Count', title=None),
-                    y=alt.Y('Result', sort='-x', title=None),
-                    color=alt.Color('Result', legend=None, scale=alt.Scale(scheme='blues')),
-                    tooltip=['Result', 'Count']
-                ).properties(height=180)
-                st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info(f"No activity recorded for: {tag}")
+        # --- Fila de KPIs (Big Numbers) ---
+        k1, k2, k3 = st.columns(3)
+        k1.metric("📞 Total Calls", total_interactions)
+        k2.metric("✅ WC Completed", sales_count)
+        k3.metric("📈 Conversion Rate", f"{conversion_rate:.1f}%")
 
-    with tabs[0]: _render_tab_metrics(today, 5, "Today")
-    with tabs[1]: _render_tab_metrics(start_of_week, 25, "This Week")
-    with tabs[2]: _render_tab_metrics(start_of_month, 100, "This Month")
+        st.divider()
+
+        # --- Gráficos ---
+        if total_interactions > 0:
+            c_donut, c_fail = st.columns([1, 1])
+
+            # 1. Gráfico de Dona (General Status)
+            with c_donut:
+                st.markdown("###### 🟢 Success vs Failure")
+                subset['Status'] = subset['result'].apply(lambda x: 'Completed' if 'Completed' in x and 'Not' not in x else 'Not Completed')
+                
+                base = alt.Chart(subset).encode(
+                    theta=alt.Theta("count()", stack=True)
+                )
+                pie = base.mark_arc(outerRadius=80, innerRadius=45).encode(
+                    color=alt.Color("Status", scale=alt.Scale(domain=['Completed', 'Not Completed'], range=['#2ecc71', '#e74c3c']), legend=None),
+                    tooltip=["Status", "count()"]
+                )
+                text = base.mark_text(radius=100).encode(
+                    text="count()",
+                    order=alt.Order("Status"),
+                    color=alt.value("black")  
+                )
+                st.altair_chart(pie + text, use_container_width=True)
+
+            # 2. Gráfico de Barras (Solo Fallos)
+            with c_fail:
+                failures = subset[subset['Status'] == 'Not Completed']
+                if not failures.empty:
+                    st.markdown("###### 🔴 Why Not Completed?")
+                    failures['Reason'] = failures['result'].str.replace('Not Completed - ', '', regex=False)
+                    
+                    fail_chart = alt.Chart(failures).mark_bar().encode(
+                        x=alt.X('count()', title=None),
+                        y=alt.Y('Reason', sort='-x', title=None),
+                        color=alt.value('#e74c3c'),
+                        tooltip=['Reason', 'count()']
+                    ).properties(height=180)
+                    st.altair_chart(fail_chart, use_container_width=True)
+                elif total_interactions > 0:
+                    st.success("🎉 Perfect Score! No failures in this period.")
+        else:
+            st.info(f"Waiting for calls... (No activity for {tag})")
+
+    with tabs[0]: _render_tab_metrics(today, "Today")
+    with tabs[1]: _render_tab_metrics(start_of_week, "This Week")
+    with tabs[2]: _render_tab_metrics(start_of_month, "This Month")
 
     # 5. News Feed
     st.divider()
-    df_news = fetch_active_news(supabase)
+    df_news = fetch_active_news(conn)
     
     if not df_news.empty:
         st.subheader("🔔 Team Updates")

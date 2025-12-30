@@ -24,20 +24,31 @@ def cargar_css():
                 </div>
             """
         except Exception as e:
-            # Loguear error pero no detener ejecución
             print(f"Warning: No se pudo cargar el logo. {e}")
 
-    # --- Inyección de CSS ---
+    # --- Inyección de CSS (CORREGIDO) ---
     st.markdown("""
         <style>
-            /* Streamlit UI Overrides */
-            #MainMenu, footer, header {
+            /* 1. Ocultar Menú hamburguesa (derecha) y Footer */
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            
+            /* 2. Ocultar la barra de colores decorativa de arriba (Rainbow line) */
+            div[data-testid="stDecoration"] {
                 visibility: hidden;
+                height: 0px;
+            }
+
+            /* 3. IMPORTANTE: NO ocultar el header completo para no perder el botón del sidebar.
+               En su lugar, lo hacemos transparente o ajustamos si molesta. */
+            header[data-testid="stHeader"] {
+                background-color: rgba(0,0,0,0); /* Transparente */
+                z-index: 1;
             }
             
             /* Viewport Optimization */
             .block-container {
-                padding-top: 2rem !important; 
+                padding-top: 3rem !important; 
                 padding-bottom: 2rem !important;
             }
             
@@ -55,7 +66,7 @@ def cargar_css():
             div.stButton > button:first-child {
                 border-radius: 4px;
                 font-weight: 600;
-                border: 1px solid #D1D5DB; /* Tailwind Gray-300 */
+                border: 1px solid #D1D5DB;
                 box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
             }
             

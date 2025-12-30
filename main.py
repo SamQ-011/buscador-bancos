@@ -1,13 +1,14 @@
 import time
 import streamlit as st
 import extra_streamlit_components as stx
-from supabase import create_client
+from sqlalchemy import text
 
 # Módulos internos
 import estilos
-# Manejo de errores en imports para evitar crash si faltan archivos
+# Manejo de errores en imports
 try:
-    from vistas import login, inicio, buscador, notas, updates, perfil, admin_panel
+    # NOTA: Asegúrate de que el archivo en la carpeta vistas se llame 'admin.py'
+    from vistas import login, inicio, buscador, notas, updates, perfil, admin
 except ImportError as e:
     st.error(f"Error cargando módulos de vista: {e}")
     st.stop()
@@ -25,15 +26,15 @@ estilos.cargar_css()
 
 # --- Configuración y Conexión ---
 
-@st.cache_resource
 def init_connection():
-    """Establece la conexión con Supabase usando secretos."""
+    """
+    Establece la conexión con PostgreSQL Local (Docker).
+    """
     try:
-        # Soporte dual para entorno local (secrets.toml) y despliegue
-        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
-        return create_client(creds["URL"], creds["KEY"])
+        return st.connection("local_db", type="sql")
     except Exception as e:
-        # En producción, esto debería loguearse en un archivo
+        # En producción, esto debería loguearse
+        print(f"DB Connection Error: {e}")
         return None
 
 def init_session_state():
@@ -42,7 +43,8 @@ def init_session_state():
         "logged_in": False,
         "real_name": "",
         "role": "",
-        "username": ""
+        "username": "",
+        "user_id": None
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -57,7 +59,7 @@ cookie_manager = stx.CookieManager(key="cordoba_cookies")
 def intentar_reconexion():
     """
     Intenta recuperar la sesión usando la cookie almacenada 
-    si el usuario no está logueado en memoria.
+    consultando a la BD SQL local.
     """
     if st.session_state.logged_in:
         return
@@ -70,23 +72,29 @@ def intentar_reconexion():
         return
 
     user_cookie = cookies.get("cordoba_user")
-    supabase = init_connection()
+    conn = init_connection()
     
-    if supabase:
+    if conn:
         try:
-            res = supabase.table("Users").select("*").eq("username", user_cookie).execute()
-            if res.data:
-                user = res.data[0]
+            # Consulta SQL para validar la cookie (usuario)
+            query = 'SELECT * FROM "Users" WHERE username = :u'
+            df = conn.query(query, params={"u": user_cookie}, ttl=0)
+            
+            if not df.empty:
+                user = df.iloc[0].to_dict()
+                
                 if user.get('active', True):
                     st.session_state.update({
                         "logged_in": True,
                         "username": user['username'],
                         "real_name": user['name'],
-                        "role": user['role']
+                        "role": user['role'],
+                        "user_id": user['id']
                     })
                     st.rerun()
-        except Exception:
-            pass # Fallo silencioso en reconexión
+        except Exception as e:
+            print(f"Reconnection error: {e}")
+            pass 
 
 # --- Lógica Principal ---
 
@@ -100,42 +108,41 @@ def main():
 
     # Sidebar y Navegación
     with st.sidebar:
-        # Espaciador para logo (inyectado por CSS/Estilos)
-        st.write("") 
+        st.write("") # Espaciador
         
         with st.container(border=True):
             icono = "🛡️" if st.session_state.role == "Admin" else "👤"
             st.markdown(f"**{icono} {st.session_state.real_name}**")
-            st.caption(f"Perfil: {st.session_state.role}")
+            st.caption(f"Profile: {st.session_state.role}")
         
         st.markdown("---")
         
         # Definición de rutas según permisos
         if st.session_state.role == "Admin":
             rutas = {
-                "🎛️ Panel Admin": admin_panel,
-                "🏠 Dashboard Personal": inicio,
-                "📝 Generador Notas": notas,
-                "🔍 Buscar Bancos": buscador,
-                "⚙️ Mi Perfil": perfil
+                "🎛️ Admin Panel": admin,
+                "🏠 Personal Dashboard": inicio,
+                "📝 Notes": notas,
+                "🔍 Search Creditor": buscador,
+                "⚙️ My profile": perfil
             }
         else:
             rutas = {
-                "🏠 Inicio": inicio,
-                "📝 Generador Notas": notas,
-                "🔍 Buscar Bancos": buscador,
-                "🔔 Noticias": updates,
-                "⚙️ Mi Perfil": perfil
+                "🏠 Home": inicio,
+                "📝 Notes": notas,
+                "🔍 Search Creditor": buscador,
+                "🔔 Updates": updates,
+                "⚙️ My profile": perfil
             }
 
         opcion = st.radio("Navegación:", list(rutas.keys()), label_visibility="collapsed")
         st.markdown("---")
         
         # Logout logic
-        if st.button("🚪 Cerrar Sesión", use_container_width=True):
+        if st.button("🚪 Log out", use_container_width=True):
             cookie_manager.delete("cordoba_user")
             # Reset de sesión manual
-            for key in ["logged_in", "role", "real_name", "username"]:
+            for key in ["logged_in", "role", "real_name", "username", "user_id"]:
                 if key in st.session_state:
                     del st.session_state[key]
             
@@ -144,7 +151,8 @@ def main():
 
     # Renderizado de vista seleccionada
     if opcion in rutas:
-        if opcion == "🎛️ Panel Admin" and st.session_state.role != "Admin":
+        # Validación extra de seguridad (aunque el sidebar ya filtra)
+        if opcion == "🎛️ Admin Panel" and st.session_state.role != "Admin":
             st.error("Acceso denegado.")
         else:
             rutas[opcion].show()

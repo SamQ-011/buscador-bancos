@@ -1,7 +1,7 @@
 import re
 import pandas as pd
 import streamlit as st
-from supabase import create_client, Client
+from sqlalchemy import text
 
 # Configuration
 CACHE_TTL = 3600  # 1 hour cache
@@ -9,13 +9,14 @@ IGNORED_TOKENS = {"CREDITOR", "ACCOUNT", "BALANCE", "DEBT", "AMOUNT"}
 
 # --- Infrastructure ---
 
-@st.cache_resource
-def init_connection() -> Client:
-    """Singleton connection to Supabase."""
+def init_connection():
+    """
+    Conexión a PostgreSQL Local (Docker) usando el conector nativo de Streamlit.
+    """
     try:
-        creds = st.secrets["connections"]["supabase"] if "connections" in st.secrets else st.secrets
-        return create_client(creds["URL"], creds["KEY"])
-    except Exception:
+        return st.connection("local_db", type="sql")
+    except Exception as e:
+        st.error(f"Error conectando a BD: {e}")
         return None
 
 # --- Data Layer ---
@@ -26,21 +27,19 @@ def fetch_creditor_master_list() -> pd.DataFrame:
     Retrieves and caches the creditor master list (limit 10k).
     Returns normalized DataFrame with ['Code', 'Name', 'Normalized_Code'].
     """
-    supabase = init_connection()
-    if not supabase: return pd.DataFrame()
+    conn = init_connection()
+    if not conn: return pd.DataFrame()
 
     try:
-        res = supabase.table("Creditors")\
-            .select("abreviation, name")\
-            .order("abreviation")\
-            .limit(10000)\
-            .execute()
-        
-        df = pd.DataFrame(res.data)
+        # SQL Query directo a la tabla "Creditors"
+        query = 'SELECT abreviation, name FROM "Creditors" ORDER BY abreviation LIMIT 10000'
+        df = conn.query(query, ttl=CACHE_TTL)
         
         if not df.empty:
+            # Normalización en Pandas (igual que antes)
             df = df.rename(columns={"abreviation": "Code", "name": "Name"})
             df = df.dropna(subset=['Code'])
+            
             # Pre-compute upper case for faster matching
             df['Normalized_Code'] = df['Code'].astype(str).str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
             
@@ -72,12 +71,12 @@ def show():
     # Header & Metrics
     col_header, col_metric = st.columns([3, 1])
     with col_header:
-        st.title("🏦 Buscador de Acreedores")
+        st.title("🏦 Creditors Search Tool")
         st.caption("Validación y normalización de códigos bancarios.")
         
     with col_metric:
         count = len(df_creditors) if not df_creditors.empty else 0
-        st.metric("Total Entidades", count, delta="Active DB" if count > 0 else "Offline")
+        st.metric("Total Creditors", count, delta="Active DB" if count > 0 else "Offline")
 
     # Indexing for O(1) lookups
     if not df_creditors.empty:
