@@ -73,7 +73,7 @@ def show(cookie_manager):
                                 "username": user['username'],
                                 "real_name": user['name'],
                                 "role": user['role'],
-                                "user_id": user['id']
+                                "user_id": int(user['id'])
                             })
                             
                             st.success(f"Welcome back, {user['name']}!")
@@ -84,4 +84,5 @@ def show(cookie_manager):
                     else:
                         st.error("Invalid username or password.")
                 else:
+
                     st.warning("Please fill in all fields.")
