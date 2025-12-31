@@ -167,7 +167,7 @@ def commit_log(conn, payload: dict) -> bool:
         
         params = {
             "created_at": datetime.now(pytz.utc), 
-            "uid": payload['user_id'],
+            "uid": int(payload['user_id']),
             "agent": payload['username'],
             "cid": payload['cordoba_id'],
             "res": payload['result'],
@@ -472,4 +472,5 @@ def show():
         st.info("No records found for today.")
 
 if __name__ == "__main__":
+
     show()
