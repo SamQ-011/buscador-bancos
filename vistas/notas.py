@@ -89,19 +89,40 @@ def _register_successful_save(record_id: str):
     st.session_state.last_save_time = time.time()
     st.session_state.last_save_id = record_id
 
+# ... (Mantener importaciones y REASON_TEMPLATES igual)
+
 def _inject_copy_button(text_content: str, unique_key: str):
+    """Boton de copia con soporte para HTTP (No seguro) y HTTPS."""
     if not text_content: return
     safe_text = (text_content.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
     html = f"""
     <script>
     function copyToClipboard() {{
         const text = `{safe_text}`;
-        navigator.clipboard.writeText(text).then(function() {{
+        const updateBtn = () => {{
             const btn = document.getElementById('btn_{unique_key}');
             btn.innerHTML = '✅ Copied!';
             btn.style.backgroundColor = '#d1e7dd';
             setTimeout(() => {{ btn.innerHTML = '📋 Copiar Nota'; btn.style.backgroundColor = '#f0f2f6'; }}, 2000);
-        }}, function(err) {{ console.error('Clipboard Error', err); }});
+        }};
+
+        // Intento con API moderna (HTTPS)
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(text).then(updateBtn, function(err) {{ console.error('Error', err); }});
+        }} else {{
+            // Fallback para HTTP (No seguro)
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {{
+                document.execCommand('copy');
+                updateBtn();
+            }} catch (err) {{
+                console.error('Fallback Error', err);
+            }}
+            document.body.removeChild(textArea);
+        }}
     }}
     </script>
     <button id="btn_{unique_key}" onclick="copyToClipboard()" style="
@@ -112,24 +133,24 @@ def _inject_copy_button(text_content: str, unique_key: str):
     """
     components.html(html, height=60)
 
-# --- Database Logic ---
-
 def fetch_agent_history(conn, username: str, limit: int = 5) -> pd.DataFrame:
-    """Retrieves recent logs for the current agent (SQL)."""
+    """Recupera historial usando búsqueda insensible a mayúsculas."""
     if not conn: return pd.DataFrame()
-    
     try:
-        query = text('SELECT created_at, result, cordoba_id FROM "Logs" WHERE agent = :u ORDER BY created_at DESC LIMIT :l')
+        # Quitamos text() de la query de conn.query y usamos ILIKE para evitar fallos de mayúsculas
+        query = 'SELECT created_at, result, cordoba_id FROM "Logs" WHERE agent ILIKE :u ORDER BY created_at DESC LIMIT :l'
         df = conn.query(query, params={"u": username, "l": limit}, ttl=0)
         
         if not df.empty:
             df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
-            df['Date'] = df['created_at'].dt.tz_convert('US/Eastern').dt.strftime('%m/%d/%Y')
+            df['Date'] = df['created_at'].dt.tz_convert('US/Eastern').dt.strftime('%m/%d/%Y %I:%M %p')
             return df[['Date', 'result', 'cordoba_id']]
-            
         return pd.DataFrame()
-    except Exception:
+    except Exception as e:
+        print(f"Error history: {e}")
         return pd.DataFrame()
+
+# ... (El resto de notas.py se mantiene igual)
 
 @st.cache_data(ttl=3600)
 def fetch_affiliates_list():
@@ -474,3 +495,4 @@ def show():
 if __name__ == "__main__":
 
     show()
+
