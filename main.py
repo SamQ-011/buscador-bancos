@@ -79,7 +79,7 @@ def intentar_reconexion():
                         "username": user['username'],
                         "real_name": user['name'],
                         "role": user['role'],
-                        "user_id": user['id']
+                        "user_id": int(user['id'])
                     })
                     st.rerun()
         except Exception as e:
@@ -145,4 +145,5 @@ def main():
             rutas[opcion].show()
 
 if __name__ == "__main__":
+
     main()
