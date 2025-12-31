@@ -25,14 +25,13 @@ TABLAS = ["Users", "Creditors", "Affiliates", "Updates", "Logs"]
 def limpiar_tablas_locales(engine_local):
     """Borra el contenido local para evitar choques de IDs."""
     print("\n🧹 Limpiando base de datos local para importación limpia...")
-    with engine_local.connect() as conn:
+    with engine_local.begin() as conn:
         # Orden inverso para respetar Foreign Keys (borrar hijos primero)
         conn.execute(text('TRUNCATE TABLE "Logs" CASCADE;'))
         conn.execute(text('TRUNCATE TABLE "Updates" CASCADE;'))
         conn.execute(text('TRUNCATE TABLE "Affiliates" CASCADE;'))
         conn.execute(text('TRUNCATE TABLE "Creditors" CASCADE;'))
         conn.execute(text('TRUNCATE TABLE "Users" CASCADE;'))
-        conn.commit()
     print("✨ Base de datos local vaciada y lista.")
 
 def procesar_dataframe(df, tabla):
@@ -96,10 +95,9 @@ def migrar():
                 
                 # Reset Sequence (Vital para que los nuevos IDs sigan la numeración)
                 if 'id' in df.columns:
-                    with engine_destino.connect() as conn:
+                    with engine_destino.begin() as conn:
                         sql_reset = f"""SELECT setval(pg_get_serial_sequence('"{tabla}"', 'id'), coalesce(max(id),0) + 1, false) FROM "{tabla}";"""
                         conn.execute(text(sql_reset))
-                        conn.commit()
 
             except Exception as e:
                 print(f"   ❌ Error crítico en {tabla}: {e}")

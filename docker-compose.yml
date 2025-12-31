@@ -1,15 +1,13 @@
 version: '3.8'
 
 services:
-  # Base de Datos
+  # Base de Datos PostgreSQL
   db:
     image: postgres:15-alpine
     container_name: cordoba_db
     restart: always
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: cordoba_secure_password_2025
-      POSTGRES_DB: cordoba_workspace
+    env_file:
+      - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -25,13 +23,10 @@ services:
     restart: always
     depends_on:
       - db
+    env_file:
+      - .env
     ports:
       - "8501:8501"
-    environment:
-      # AQUÍ ESTÁ LA MAGIA 🌟
-      # Definimos la URL de conexión como variable de entorno.
-      # Sintaxis: postgresql://usuario:password@host:puerto/nombre_db
-      DATABASE_URL: "postgresql://admin:cordoba_secure_password_2025@db:5432/cordoba_workspace"
     networks:
       - cordoba_net
 

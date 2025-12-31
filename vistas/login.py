@@ -84,5 +84,4 @@ def show(cookie_manager):
                     else:
                         st.error("Invalid username or password.")
                 else:
-
                     st.warning("Please fill in all fields.")
