@@ -3,7 +3,14 @@ import pandas as pd
 import altair as alt
 import streamlit as st
 from datetime import datetime, timedelta
-from sqlalchemy import text
+# Quitamos text() para evitar problemas de hash/cache
+# from sqlalchemy import text 
+
+# --- IMPORTACIÓN DE CONEXIÓN ---
+try:
+    from conexion import get_db_connection
+except ImportError:
+    from conexion import get_db_connection
 
 # --- Configuration & Constants ---
 
@@ -15,28 +22,13 @@ TZ_ET = pytz.timezone('US/Eastern')
 TZ_BO = pytz.timezone('America/La_Paz')
 TZ_CO = pytz.timezone('America/Bogota')
 
-# --- Infrastructure ---
-
-def init_connection():
-    """
-    Conexión a PostgreSQL Local (Docker) usando el conector nativo.
-    """
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        st.error(f"Error conectando a BD: {e}")
-        return None
-
 # --- Business Logic (Dates) ---
 
 def _is_holiday(date_obj) -> bool:
     return (date_obj.month, date_obj.day) in US_HOLIDAYS_2025
 
 def calculate_business_date(start_date, target_days):
-    """
-    Calculates future business date skipping weekends and US holidays.
-    Counts 'start_date' as Day 1 if it's a valid business day.
-    """
+    """Calculates future business date skipping weekends and US holidays."""
     current_date = start_date
     days_counted = 0
     
@@ -58,7 +50,6 @@ def calculate_business_date(start_date, target_days):
 def fetch_active_news(conn) -> pd.DataFrame:
     if not conn: return pd.DataFrame()
     try:
-        # SQL Directo
         query = 'SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC'
         return conn.query(query, ttl=60)
     except Exception:
@@ -67,15 +58,23 @@ def fetch_active_news(conn) -> pd.DataFrame:
 def fetch_agent_metrics(conn, agent_name: str, start_date_utc: str) -> pd.DataFrame:
     if not conn: return pd.DataFrame()
     try:
-        # SQL con parámetros seguros
-        query = text("""
+        # CORRECCIÓN ROBUSTA:
+        # 1. Usamos string normal (sin text()) para evitar errores de cache.
+        # 2. Usamos TRIM() y LOWER() para ignorar espacios y mayúsculas.
+        # 3. Casteamos created_at para asegurar comparación correcta.
+        query = """
             SELECT * FROM "Logs" 
-            WHERE agent = :agent 
+            WHERE LOWER(TRIM(agent)) = :agent 
             AND created_at >= :start_date 
             ORDER BY created_at DESC
-        """)
-        return conn.query(query, params={"agent": agent_name, "start_date": start_date_utc}, ttl=0)
-    except Exception:
+        """
+        
+        # Limpiamos el input también
+        clean_agent = agent_name.strip().lower()
+        
+        return conn.query(query, params={"agent": clean_agent, "start_date": start_date_utc}, ttl=0)
+    except Exception as e:
+        print(f"Error metrics: {e}") # Log para debug en consola Docker
         return pd.DataFrame()
 
 # --- UI Components ---
@@ -96,23 +95,20 @@ def render_clock_widget():
 # --- Main View ---
 
 def show():
-    # Inicializamos conexión SQL
-    conn = init_connection()
+    conn = get_db_connection()
     
     # 1. Time & Context Setup
     now_et = datetime.now(TZ_ET)
     today = now_et.date()
     
-    # Date Anchors
     start_of_week = today - timedelta(days=today.weekday())
     start_of_month = today.replace(day=1)
     
-    # Preparamos fecha UTC para la consulta SQL
     start_of_month_utc = datetime.combine(start_of_month, datetime.min.time()).replace(tzinfo=TZ_ET).astimezone(pytz.utc).isoformat()
 
     agent_name = st.session_state.get("username")
     if not agent_name:
-        st.error("⚠️ Sesión inválida. Por favor recarga la página (F5) o haz Login de nuevo.")
+        st.error("⚠️ Sesión inválida. Recarga la página.")
         st.stop()
 
     # 2. Header
@@ -126,7 +122,6 @@ def show():
 
     # 3. Date Calculator Module
     st.subheader("📅 First Payment Dates")
-    
     date_std = calculate_business_date(now_et, 3) 
     date_ext = calculate_business_date(now_et, 5)  
     date_max = now_et + timedelta(days=35)
@@ -149,14 +144,10 @@ def show():
     st.write("") 
 
     # 4. Performance Dashboard
-    # Pasamos 'conn' en lugar de 'supabase'
     df_logs = fetch_agent_metrics(conn, agent_name, start_of_month_utc)
     
-    # Pre-process dates if data exists
     if not df_logs.empty and 'created_at' in df_logs.columns:
-        # Aseguramos formato datetime (SQL devuelve datetime, pero Pandas a veces necesita ayuda con TZs)
         df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], utc=True)
-        # Convertimos a ET
         df_logs['date_et'] = df_logs['created_at'].dt.tz_convert(TZ_ET).dt.date
         
     st.subheader("📊 Performance Tracker")
@@ -168,15 +159,11 @@ def show():
         else:
             subset = df_logs[df_logs['date_et'] >= filter_date].copy()
         
-        # --- Cálculo de Métricas ---
         total_interactions = len(subset)
-        
-        # Filtrar Completados vs No Completados
         completed_df = subset[subset['result'].str.contains('Completed', case=False, na=False) & ~subset['result'].str.contains('Not', case=False, na=False)]
         sales_count = len(completed_df)
         conversion_rate = (sales_count / total_interactions * 100) if total_interactions > 0 else 0
 
-        # --- Fila de KPIs (Big Numbers) ---
         k1, k2, k3 = st.columns(3)
         k1.metric("📞 Total Calls", total_interactions)
         k2.metric("✅ WC Completed", sales_count)
@@ -184,36 +171,26 @@ def show():
 
         st.divider()
 
-        # --- Gráficos ---
         if total_interactions > 0:
             c_donut, c_fail = st.columns([1, 1])
-
-            # 1. Gráfico de Dona (General Status)
             with c_donut:
                 st.markdown("###### 🟢 Success vs Failure")
                 subset['Status'] = subset['result'].apply(lambda x: 'Completed' if 'Completed' in x and 'Not' not in x else 'Not Completed')
-                
-                base = alt.Chart(subset).encode(
-                    theta=alt.Theta("count()", stack=True)
-                )
+                base = alt.Chart(subset).encode(theta=alt.Theta("count()", stack=True))
                 pie = base.mark_arc(outerRadius=80, innerRadius=45).encode(
                     color=alt.Color("Status", scale=alt.Scale(domain=['Completed', 'Not Completed'], range=['#2ecc71', '#e74c3c']), legend=None),
                     tooltip=["Status", "count()"]
                 )
                 text = base.mark_text(radius=100).encode(
-                    text="count()",
-                    order=alt.Order("Status"),
-                    color=alt.value("black")  
+                    text="count()", order=alt.Order("Status"), color=alt.value("black")  
                 )
                 st.altair_chart(pie + text, use_container_width=True)
 
-            # 2. Gráfico de Barras (Solo Fallos)
             with c_fail:
                 failures = subset[subset['Status'] == 'Not Completed']
                 if not failures.empty:
                     st.markdown("###### 🔴 Why Not Completed?")
                     failures['Reason'] = failures['result'].str.replace('Not Completed - ', '', regex=False)
-                    
                     fail_chart = alt.Chart(failures).mark_bar().encode(
                         x=alt.X('count()', title=None),
                         y=alt.Y('Reason', sort='-x', title=None),
@@ -233,7 +210,6 @@ def show():
     # 5. News Feed
     st.divider()
     df_news = fetch_active_news(conn)
-    
     if not df_news.empty:
         st.subheader("🔔 Team Updates")
         for _, row in df_news.iterrows():
@@ -243,7 +219,6 @@ def show():
                 'WARNING':  {'bg': '#FFF8E1', 'bd': '#FFA000', 'icon': '⚠️'},
                 'INFO':     {'bg': '#F1F5F9', 'bd': '#475569', 'icon': 'ℹ️'}
             }.get(cat, {'bg': '#F1F5F9', 'bd': '#475569', 'icon': 'ℹ️'})
-            
             st.markdown(f"""
                 <div style='background-color: {theme['bg']}; border-left: 4px solid {theme['bd']}; padding: 12px; border-radius: 4px; margin-bottom: 10px;'>
                     <div style='display:flex; justify-content:space-between; color: #666; font-size: 0.8em; margin-bottom: 4px;'>

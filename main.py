@@ -1,14 +1,14 @@
 import time
 import streamlit as st
 import extra_streamlit_components as stx
-from sqlalchemy import text
 
 # Módulos internos
 import estilos
-# Manejo de errores en imports
+# Importamos la conexión centralizada
+from conexion import get_db_connection 
+
 try:
-    # NOTA: Asegúrate de que el archivo en la carpeta vistas se llame 'admin.py'
-    from vistas import login, inicio, buscador, notas, updates, perfil, admin
+    from vistas import login, inicio, buscador, notas, updates, perfil, admin_panel
 except ImportError as e:
     st.error(f"Error cargando módulos de vista: {e}")
     st.stop()
@@ -24,18 +24,7 @@ st.set_page_config(
 # Carga de estilos CSS globales
 estilos.cargar_css()
 
-# --- Configuración y Conexión ---
-
-def init_connection():
-    """
-    Establece la conexión con PostgreSQL Local (Docker).
-    """
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        # En producción, esto debería loguearse
-        print(f"DB Connection Error: {e}")
-        return None
+# --- Gestión de Estado y Sesión ---
 
 def init_session_state():
     """Inicializa las variables de sesión requeridas."""
@@ -58,13 +47,12 @@ cookie_manager = stx.CookieManager(key="cordoba_cookies")
 
 def intentar_reconexion():
     """
-    Intenta recuperar la sesión usando la cookie almacenada 
-    consultando a la BD SQL local.
+    Intenta recuperar la sesión usando la cookie almacenada
+    conectando a la BD a través del gestor centralizado.
     """
     if st.session_state.logged_in:
         return
 
-    # Pequeño delay para asegurar montaje del componente de cookies
     time.sleep(0.1)
     
     cookies = cookie_manager.get_all()
@@ -72,11 +60,13 @@ def intentar_reconexion():
         return
 
     user_cookie = cookies.get("cordoba_user")
-    conn = init_connection()
+    
+    # USAMOS LA CONEXIÓN CENTRALIZADA
+    conn = get_db_connection()
     
     if conn:
         try:
-            # Consulta SQL para validar la cookie (usuario)
+            # Consulta SQL simple (string) para evitar problemas de hash
             query = 'SELECT * FROM "Users" WHERE username = :u'
             df = conn.query(query, params={"u": user_cookie}, ttl=0)
             
@@ -108,7 +98,7 @@ def main():
 
     # Sidebar y Navegación
     with st.sidebar:
-        st.write("") # Espaciador
+        st.write("") 
         
         with st.container(border=True):
             icono = "🛡️" if st.session_state.role == "Admin" else "👤"
@@ -120,7 +110,7 @@ def main():
         # Definición de rutas según permisos
         if st.session_state.role == "Admin":
             rutas = {
-                "🎛️ Admin Panel": admin,
+                "🎛️ Admin Panel": admin_panel,
                 "🏠 Personal Dashboard": inicio,
                 "📝 Notes": notas,
                 "🔍 Search Creditor": buscador,
@@ -138,10 +128,8 @@ def main():
         opcion = st.radio("Navegación:", list(rutas.keys()), label_visibility="collapsed")
         st.markdown("---")
         
-        # Logout logic
         if st.button("🚪 Log out", use_container_width=True):
             cookie_manager.delete("cordoba_user")
-            # Reset de sesión manual
             for key in ["logged_in", "role", "real_name", "username", "user_id"]:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -151,7 +139,6 @@ def main():
 
     # Renderizado de vista seleccionada
     if opcion in rutas:
-        # Validación extra de seguridad (aunque el sidebar ya filtra)
         if opcion == "🎛️ Admin Panel" and st.session_state.role != "Admin":
             st.error("Acceso denegado.")
         else:

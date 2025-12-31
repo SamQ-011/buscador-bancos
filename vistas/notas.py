@@ -7,6 +7,12 @@ import streamlit.components.v1 as components
 from datetime import datetime
 from sqlalchemy import text
 
+# --- IMPORTACIÓN DE CONEXIÓN ---
+try:
+    from conexion import get_db_connection
+except ImportError:
+    from conexion import get_db_connection
+
 # --- Configuration & Templates ---
 
 REASON_TEMPLATES = {
@@ -51,13 +57,6 @@ REASON_TEMPLATES = {
 }
 
 # --- Infrastructure ---
-
-def init_connection():
-    """Conexión a PostgreSQL Local (Docker)."""
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        return None
 
 def run_transaction(conn, query_str: str, params: dict = None):
     """Ejecuta INSERT de forma segura."""
@@ -135,7 +134,8 @@ def fetch_agent_history(conn, username: str, limit: int = 5) -> pd.DataFrame:
 @st.cache_data(ttl=3600)
 def fetch_affiliates_list():
     """Fetches the list of active affiliates from DB (SQL)."""
-    conn = init_connection()
+    # Usamos conexión centralizada
+    conn = get_db_connection()
     if not conn: return []
     
     try:
@@ -166,7 +166,7 @@ def commit_log(conn, payload: dict) -> bool:
         """
         
         params = {
-            "created_at": datetime.now(pytz.utc), # Enviamos objeto datetime, el driver lo maneja
+            "created_at": datetime.now(pytz.utc), 
             "uid": payload['user_id'],
             "agent": payload['username'],
             "cid": payload['cordoba_id'],
@@ -236,7 +236,9 @@ def render_confirm_modal(conn, payload: dict):
 
 def show():
     st.title("📝 Notes Generator")
-    conn = init_connection()
+    
+    # CONEXIÓN CENTRALIZADA
+    conn = get_db_connection()
 
     # Initialization
     keys_defaults = {

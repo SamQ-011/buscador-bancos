@@ -3,17 +3,11 @@ import bcrypt
 import streamlit as st
 from sqlalchemy import text
 
-# --- Infrastructure ---
-
-def init_connection():
-    """
-    Conexión a PostgreSQL Local (Docker).
-    """
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        st.error(f"Service unavailable: {e}")
-        return None
+# --- IMPORTACIÓN DE CONEXIÓN ---
+try:
+    from conexion import get_db_connection
+except ImportError:
+    from conexion import get_db_connection
 
 # --- Backend Logic ---
 
@@ -21,12 +15,13 @@ def update_credentials(username: str, current_pass: str, new_pass: str) -> bool:
     """
     Verifies current password hash and updates DB with new bcrypt hash (SQL).
     """
-    conn = init_connection()
+    # USAMOS CONEXIÓN CENTRALIZADA
+    conn = get_db_connection()
     if not conn: return False
 
     try:
-        # 1. Obtener hash actual
-        query = text('SELECT password FROM "Users" WHERE username = :u')
+        # 1. Obtener hash actual (Lectura con string simple)
+        query = 'SELECT password FROM "Users" WHERE username = :u'
         df = conn.query(query, params={"u": username}, ttl=0)
         
         if df.empty:
@@ -43,6 +38,7 @@ def update_credentials(username: str, current_pass: str, new_pass: str) -> bool:
         # 3. Generar nuevo hash y actualizar
         new_hash = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
+        # Para escrituras (UPDATE/INSERT) dentro de session, sí usamos text() para seguridad
         update_sql = text('UPDATE "Users" SET password = :p WHERE username = :u')
         
         with conn.session as s:

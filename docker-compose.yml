@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 1. Base de Datos (PostgreSQL)
+  # Base de Datos
   db:
     image: postgres:15-alpine
     container_name: cordoba_db
@@ -12,13 +12,13 @@ services:
       POSTGRES_DB: cordoba_workspace
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql # Script de inicio
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
     networks:
       - cordoba_net
 
-  # 2. Aplicación (Streamlit)
+  # Aplicación Streamlit
   app:
     build: .
     container_name: cordoba_app
@@ -28,11 +28,10 @@ services:
     ports:
       - "8501:8501"
     environment:
-      # Configuración de conexión para Streamlit
-      # Formato: postgresql://user:password@host:port/database
-      # "db" es el nombre del servicio de arriba (host interno de Docker)
-      CONNECTIONS__LOCAL_DB__TYPE: sql
-      CONNECTIONS__LOCAL_DB__URL: postgresql://admin:cordoba_secure_password_2025@db:5432/cordoba_workspace
+      # AQUÍ ESTÁ LA MAGIA 🌟
+      # Definimos la URL de conexión como variable de entorno.
+      # Sintaxis: postgresql://usuario:password@host:puerto/nombre_db
+      DATABASE_URL: "postgresql://admin:cordoba_secure_password_2025@db:5432/cordoba_workspace"
     networks:
       - cordoba_net
 

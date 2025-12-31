@@ -1,0 +1,9 @@
+# Ignorar secretos y configuraciones locales
+.streamlit/secrets.toml
+.env
+
+# Ignorar archivos basura de Python
+__pycache__/
+*.pyc
+
+migrar_datos.py

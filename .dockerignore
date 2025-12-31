@@ -1,0 +1,23 @@
+# Ignorar carpeta de entorno virtual (Docker crea el suyo)
+venv
+.venv
+__pycache__
+
+# Ignorar archivos de Git
+.gitignore
+.git
+
+# Ignorar archivos de datos y excels locales
+*.csv
+*.xlsx
+
+# Ignorar scripts viejos o de prueba
+app_old.py
+actualizador.py
+comparador.py
+fix_passwords.py
+importador.py
+limpiador.py
+migrate_users.py
+pruebas.py
+migrar_datos.py

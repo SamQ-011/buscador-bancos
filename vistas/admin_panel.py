@@ -8,18 +8,13 @@ import streamlit as st
 from datetime import datetime, timedelta
 from sqlalchemy import text
 
-# --- Infrastructure & Connection ---
-
-def init_connection():
-    """
-    Conexión a PostgreSQL Local (Docker) usando el conector nativo de Streamlit.
-    Requiere configuración en .streamlit/secrets.toml bajo [connections.local_db]
-    """
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        st.error(f"Error conectando a BD Local: {e}")
-        return None
+# --- IMPORTACIÓN DE CONEXIÓN ---
+# Al estar conexion.py en la raíz, lo importamos directo.
+try:
+    from conexion import get_db_connection
+except ImportError:
+    # Fallback por si acaso se mueve a vistas en el futuro
+    from conexion import get_db_connection
 
 # --- Helper para Transacciones (Escritura) ---
 
@@ -45,11 +40,9 @@ def fetch_global_kpis(conn):
         df_count = conn.query('SELECT COUNT(*) as total FROM "Creditors"', ttl=0)
         total_bancos = df_count.iloc[0]['total'] if not df_count.empty else 0
         
-        # 2. Actividad Reciente
-        # Traemos logs desde ayer UTC para asegurar cobertura horaria
+        # 2. Actividad Reciente (Logs desde ayer UTC)
         yesterday_utc = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
         
-        # SQL Query: Filtrar fecha y excluir 'test'
         logs_query = """
             SELECT * FROM "Logs" 
             WHERE created_at >= :yesterday 
@@ -83,7 +76,7 @@ def fetch_user_map(conn):
 def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
     """Tab 1: Visualización de métricas y exportación."""
     
-    # --- PROCESAMIENTO DE FECHAS (Pandas Logic - Se mantiene igual) ---
+    # Procesamiento de fechas
     df_today = pd.DataFrame()
     today_et = datetime.now(pytz.timezone('US/Eastern')).date()
 
@@ -136,16 +129,16 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                 tooltip=["result", "count()"],
                 order=alt.Order("count()", sort="descending")
             )
-            text = base.mark_text(radius=120).encode(
+            text_chart = base.mark_text(radius=120).encode(
                 text="count()",
                 order=alt.Order("Status_Simple"),
                 color=alt.value("black")  
             )
-            st.altair_chart(pie + text, use_container_width=True)
+            st.altair_chart(pie + text_chart, use_container_width=True)
     else:
         st.info("Sin actividad registrada hoy.")
 
-    # 3. Export Module (AUDITORIA EXCEL - SQL Version)
+    # 3. Export Module
     with st.expander("📥 Auditoría y Exportación", expanded=False):
         c_d1, c_d2, c_filt = st.columns([1, 1, 2])
         start_date = c_d1.date_input("Desde", value=datetime.now().replace(day=1))
@@ -156,7 +149,6 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
         
         if st.button("Generar Reporte Excel", type="primary"):
             try:
-                # Construcción dinámica de la consulta SQL
                 base_query = """
                     SELECT * FROM "Logs" 
                     WHERE created_at >= :start 
@@ -167,7 +159,6 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                     "end": f"{end_date}T23:59:59"
                 }
                 
-                # Filtro Anti-Test y Agente Específico
                 if "TODOS" not in target_agent:
                     base_query += " AND agent = :target"
                     params["target"] = target_agent
@@ -176,11 +167,9 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                 
                 base_query += " ORDER BY created_at DESC"
                 
-                # Ejecutar Query
                 df_export = conn.query(base_query, params=params, ttl=0)
                 
                 if not df_export.empty:
-                    # --- Generación de Excel (Misma lógica que antes) ---
                     user_map = fetch_user_map(conn)
                     output = io.BytesIO()
                     
@@ -232,7 +221,7 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                             ws_ag.set_column('D:D', 45); ws_ag.set_column('E:E', 25); ws_ag.set_column('F:F', 15)
 
                     output.seek(0)
-                    st.download_button(label="💾 Descargar Reporte Excel (.xlsx)", data=output, file_name=f"Reporte_Gestion_{start_date}_{end_date}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    st.download_button(label="💾 Descargar Reporte Excel", data=output, file_name=f"Reporte_Gestion_{start_date}_{end_date}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     st.success(f"Reporte generado con éxito.")
                 else:
                     st.warning("No hay datos para el periodo seleccionado.")
@@ -240,21 +229,20 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                 st.error(f"Error generando Excel: {e}")
 
 def _render_log_editor(conn):
-    """Tab 2: Herramienta de corrección de registros (CRUD SQL)."""
+    """Tab 2: Herramienta de corrección de registros."""
     st.subheader("🛠️ Quirófano de Registros")
     search_id = st.text_input("Buscar por ID Córdoba:", placeholder="Ej: 1234567890").strip()
     
     if not search_id: return
 
     try:
-        # SQL Select
         df_res = conn.query('SELECT * FROM "Logs" WHERE cordoba_id = :cid ORDER BY created_at DESC', params={"cid": search_id}, ttl=0)
         
         if df_res.empty:
             st.warning("No se encontraron coincidencias por ID.")
             return
 
-        results = df_res.to_dict('records') # Convertir a lista de dicts para compatibilidad
+        results = df_res.to_dict('records')
         options = {}
         for l in results:
             dt_utc = pd.to_datetime(l['created_at'])
@@ -281,7 +269,6 @@ def _render_log_editor(conn):
             new_comm = st.text_area("Comentarios (Censurados)", record['comments'] or "")
             
             if st.form_submit_button("💾 Aplicar Cambios", type="primary"):
-                # SQL UPDATE
                 sql = """
                     UPDATE "Logs" SET 
                         cordoba_id = :cid, affiliate = :aff, 
@@ -297,7 +284,7 @@ def _render_log_editor(conn):
         st.error(f"Error en búsqueda: {e}")
 
 def _render_bank_manager(conn):
-    """Tab 3: Gestión de Acreedores (SQL)."""
+    """Tab 3: Gestión de Acreedores."""
     c_add, c_edit = st.columns([1, 2])
     
     with c_add:
@@ -336,7 +323,7 @@ def _render_bank_manager(conn):
                             st.rerun()
 
 def _render_updates_manager(conn):
-    """Tab 4: Centro de Mensajes (SQL)."""
+    """Tab 4: Centro de Mensajes."""
     c1, c2 = st.columns([1, 2])
     
     with c1:
@@ -371,7 +358,7 @@ def _render_updates_manager(conn):
                         st.rerun()
 
 def _render_user_manager(conn):
-    """Tab 5: Gestión de Usuarios (SQL)."""
+    """Tab 5: Gestión de Usuarios."""
     c1, c2 = st.columns([1, 2])
     
     with c1:
@@ -433,7 +420,9 @@ def _render_user_manager(conn):
 
 def show():
     st.title("🎛️ Torre de Control (Local)")
-    conn = init_connection()
+    
+    # CONEXIÓN CENTRALIZADA
+    conn = get_db_connection()
     if not conn: return
 
     tabs = st.tabs([

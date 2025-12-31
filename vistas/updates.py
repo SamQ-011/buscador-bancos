@@ -3,6 +3,12 @@ import streamlit as st
 from datetime import datetime
 from sqlalchemy import text
 
+# --- IMPORTACIÓN DE CONEXIÓN ---
+try:
+    from conexion import get_db_connection
+except ImportError:
+    from conexion import get_db_connection
+
 # --- Configuration ---
 
 CATEGORY_THEMES = {
@@ -10,18 +16,6 @@ CATEGORY_THEMES = {
     'WARNING':  {'border': '#D97706', 'bg': '#D97706', 'icon': '⚠️'}, # Amber-600
     'INFO':     {'border': '#2563EB', 'bg': '#2563EB', 'icon': 'ℹ️'}  # Blue-600
 }
-
-# --- Infrastructure ---
-
-def init_connection():
-    """
-    Conexión a PostgreSQL Local (Docker) usando el conector nativo de Streamlit.
-    """
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        st.error(f"Error conectando a BD: {e}")
-        return None
 
 # --- Data Layer ---
 
@@ -32,10 +26,9 @@ def fetch_updates(conn) -> pd.DataFrame:
     try:
         # SQL Query directo
         query = 'SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC'
-        # Usamos un cache TTL pequeño (60s) para no saturar la BD si hay muchos usuarios
+        # Usamos un cache TTL pequeño (60s)
         return conn.query(query, ttl=60)
     except Exception as e:
-        # Log to console in production
         print(f"[Updates Fetch Error] {e}")
         return pd.DataFrame()
 
@@ -47,7 +40,7 @@ def _render_update_card(row: pd.Series):
     cat = str(row.get('category', 'Info')).strip().upper()
     title = row.get('title', 'System Notice')
     msg = row.get('message', '')
-    raw_date = str(row.get('date', ''))
+    raw_date = row.get('date', '')
 
     # Date formatting
     try:
@@ -110,8 +103,8 @@ def show():
 
     st.divider()
 
-    # Data Loading
-    conn = init_connection()
+    # Data Loading (Conexión Centralizada)
+    conn = get_db_connection()
     df = fetch_updates(conn)
 
     if df.empty:
@@ -131,15 +124,13 @@ def show():
             label_visibility="collapsed"
         )
 
-    # Filtering Logic (Pandas - Igual que antes)
+    # Filtering Logic
     if search_query:
-        # Case-insensitive search on Title OR Message
         mask = df['title'].str.contains(search_query, case=False, na=False) | \
                df['message'].str.contains(search_query, case=False, na=False)
         df = df[mask]
 
     if cat_filter != "All Types":
-        # Extract keyword (CRITICAL, WARNING, INFO)
         target_cat = cat_filter.split(" ")[1].strip()
         df = df[df['category'].str.upper() == target_cat]
 

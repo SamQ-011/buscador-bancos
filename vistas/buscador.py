@@ -3,21 +3,17 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
+# --- IMPORTACIÓN DE CONEXIÓN ---
+# Intentamos importar desde la raíz (donde creamos conexion.py)
+try:
+    from conexion import get_db_connection
+except ImportError:
+    # Fallback por si la estructura cambia
+    from conexion import get_db_connection
+
 # Configuration
 CACHE_TTL = 3600  # 1 hour cache
 IGNORED_TOKENS = {"CREDITOR", "ACCOUNT", "BALANCE", "DEBT", "AMOUNT"}
-
-# --- Infrastructure ---
-
-def init_connection():
-    """
-    Conexión a PostgreSQL Local (Docker) usando el conector nativo de Streamlit.
-    """
-    try:
-        return st.connection("local_db", type="sql")
-    except Exception as e:
-        st.error(f"Error conectando a BD: {e}")
-        return None
 
 # --- Data Layer ---
 
@@ -27,7 +23,8 @@ def fetch_creditor_master_list() -> pd.DataFrame:
     Retrieves and caches the creditor master list (limit 10k).
     Returns normalized DataFrame with ['Code', 'Name', 'Normalized_Code'].
     """
-    conn = init_connection()
+    # Usamos la conexión centralizada
+    conn = get_db_connection()
     if not conn: return pd.DataFrame()
 
     try:
@@ -36,7 +33,7 @@ def fetch_creditor_master_list() -> pd.DataFrame:
         df = conn.query(query, ttl=CACHE_TTL)
         
         if not df.empty:
-            # Normalización en Pandas (igual que antes)
+            # Normalización
             df = df.rename(columns={"abreviation": "Code", "name": "Name"})
             df = df.dropna(subset=['Code'])
             
@@ -84,7 +81,7 @@ def show():
         code_map = dict(zip(df_creditors['Normalized_Code'], df_creditors['Code']))
         name_map = dict(zip(df_creditors['Normalized_Code'], df_creditors['Name']))
     else:
-        st.warning("Database unavailable.")
+        # st.warning("Database unavailable.") # Opcional: ocultar warning si es solo init visual
         code_map, name_map = {}, {}
 
     # View Logic
