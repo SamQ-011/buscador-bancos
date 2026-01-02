@@ -62,10 +62,10 @@ def fetch_user_map(conn):
     except:
         return {}
 
-# --- UI Components (Tabs) ---
+# --- UI Components (Tabs Existentes) ---
 
 def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
-    """Tab 1: Visualización de métricas y exportación corregida."""
+    """Tab 1: Visualización de métricas y exportación."""
     df_today = pd.DataFrame()
     # Usamos la fecha actual en la zona horaria de la operación (ET)
     today_et = datetime.now(pytz.timezone('US/Eastern')).date()
@@ -120,7 +120,7 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
             )
             st.altair_chart(pie, use_container_width=True)
 
-    # MODULO DE EXPORTACIÓN CORREGIDO
+    # MODULO DE EXPORTACIÓN
     with st.expander("📥 Auditoría y Exportación", expanded=False):
         c_d1, c_d2, c_filt = st.columns([1, 1, 2])
         start_date = c_d1.date_input("Desde", value=datetime.now().replace(day=1))
@@ -200,9 +200,6 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
             except Exception as e:
                 st.error(f"Error generando reporte: {e}")
 
-# ... (El resto de las funciones _render_log_editor, _render_bank_manager, etc., 
-# se mantienen igual pero asegúrate de usar int() en cualquier user_id que actualices)
-
 def _render_log_editor(conn):
     st.subheader("🛠️ Quirófano de Registros")
     search_id = st.text_input("Buscar por ID Córdoba:").strip()
@@ -223,17 +220,171 @@ def _render_log_editor(conn):
                 st.success("Actualizado.")
                 st.rerun()
 
+# --- GESTORES ADICIONALES (Implementación Completa) ---
+
+def _render_bank_manager(conn):
+    """Tab 3: Gestión de Acreedores."""
+    c_add, c_edit = st.columns([1, 2])
+    
+    with c_add:
+        with st.container(border=True):
+            st.markdown("**Nuevo Acreedor**")
+            name = st.text_input("Nombre Entidad")
+            abbrev = st.text_input("Abreviación (Alias)")
+            if st.button("Agregar Banco", use_container_width=True):
+                if name:
+                    sql = 'INSERT INTO "Creditors" (name, abreviation) VALUES (:name, :abbr)'
+                    if run_transaction(conn, sql, {"name": name, "abbr": abbrev}):
+                        st.rerun()
+    
+    with c_edit:
+        q = st.text_input("🔍 Filtrar bancos...", label_visibility="collapsed")
+        if q:
+            df_banks = conn.query('SELECT * FROM "Creditors" WHERE name ILIKE :q LIMIT 15', params={"q": f"%{q}%"}, ttl=0)
+            banks = df_banks.to_dict('records')
+            
+            if banks:
+                b_opts = {b['id']: f"{b['name']} ({b['abreviation']})" for b in banks}
+                sel_id = st.selectbox("Editar:", list(b_opts.keys()), format_func=lambda x: b_opts[x])
+                target = next(b for b in banks if b['id'] == sel_id)
+                
+                with st.form("bank_edit"):
+                    n_val = st.text_input("Nombre", target['name'])
+                    a_val = st.text_input("Abrev.", target['abreviation'])
+                    c_del, c_upd = st.columns([1, 1])
+                    
+                    if c_del.form_submit_button("🗑️ Eliminar"):
+                        if run_transaction(conn, 'DELETE FROM "Creditors" WHERE id = :id', {"id": sel_id}):
+                            st.rerun()
+                    if c_upd.form_submit_button("Actualizar", type="primary"):
+                        sql = 'UPDATE "Creditors" SET name = :n, abreviation = :a WHERE id = :id'
+                        if run_transaction(conn, sql, {"n": n_val, "a": a_val, "id": sel_id}):
+                            st.rerun()
+
+def _render_updates_manager(conn):
+    """Tab 4: Centro de Mensajes."""
+    c1, c2 = st.columns([1, 2])
+    
+    with c1:
+        with st.form("new_update"):
+            st.markdown("**Publicar Noticia**")
+            tit = st.text_input("Título")
+            msg = st.text_area("Cuerpo del mensaje")
+            cat = st.selectbox("Nivel", ["Info", "Warning", "Critical"])
+            
+            if st.form_submit_button("Publicar", use_container_width=True):
+                if tit and msg:
+                    sql = """
+                        INSERT INTO "Updates" (date, title, message, category, active) 
+                        VALUES (:date, :tit, :msg, :cat, TRUE)
+                    """
+                    params = {"date": datetime.now().strftime('%Y-%m-%d'), "tit": tit, "msg": msg, "cat": cat}
+                    if run_transaction(conn, sql, params):
+                        st.rerun()
+
+    with c2:
+        st.markdown("**Mensajes Activos**")
+        df_upd = conn.query('SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC', ttl=0)
+        updates = df_upd.to_dict('records')
+        
+        for u in updates:
+            color = "#dc2626" if u['category'] == 'Critical' else "#d97706" if u['category'] == 'Warning' else "#2563eb"
+            with st.container(border=True):
+                st.markdown(f"<span style='color:{color}; font-weight:bold'>[{u['category']}] {u['title']}</span>", unsafe_allow_html=True)
+                st.write(u['message'])
+                if st.button("Archivar", key=f"arc_{u['id']}"):
+                    if run_transaction(conn, 'UPDATE "Updates" SET active = FALSE WHERE id = :id', {"id": u['id']}):
+                        st.rerun()
+
+def _render_user_manager(conn):
+    """Tab 5: Gestión de Usuarios."""
+    c1, c2 = st.columns([1, 2])
+    
+    with c1:
+        with st.form("create_user"):
+            st.markdown("**Alta de Usuario**")
+            u_user = st.text_input("Username (Login)")
+            u_name = st.text_input("Nombre Completo")
+            u_pass = st.text_input("Contraseña", type="password")
+            u_role = st.selectbox("Rol", ["Agent", "Admin"])
+            
+            if st.form_submit_button("Crear Usuario", use_container_width=True):
+                if u_user and u_pass:
+                    hashed = bcrypt.hashpw(u_pass.encode(), bcrypt.gensalt()).decode()
+                    sql = """
+                        INSERT INTO "Users" (username, name, password, role, active) 
+                        VALUES (:u, :n, :p, :r, TRUE)
+                    """
+                    if run_transaction(conn, sql, {"u": u_user, "n": u_name, "p": hashed, "r": u_role}):
+                        st.success(f"Usuario {u_user} creado.")
+                        time.sleep(1); st.rerun()
+
+    with c2:
+        df_users = conn.query('SELECT * FROM "Users" ORDER BY username', ttl=0)
+        users = df_users.to_dict('records')
+        if not users: return
+        
+        st.dataframe(pd.DataFrame(users)[['username', 'name', 'role', 'active']], use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.markdown("**Edición de Usuario**")
+        
+        u_map = {u['id']: f"{u['username']} ({u['name']})" for u in users}
+        sel_uid = st.selectbox("Seleccionar usuario:", list(u_map.keys()), format_func=lambda x: u_map[x])
+        target = next(u for u in users if u['id'] == sel_uid)
+        
+        with st.form("edit_user_form"):
+            col_a, col_b = st.columns(2)
+            new_name = col_a.text_input("Nombre", target['name'])
+            new_role = col_b.selectbox("Rol", ["Agent", "Admin"], index=0 if target['role'] == "Agent" else 1)
+            col_c, col_d = st.columns(2)
+            is_active = col_c.checkbox("Cuenta Activa", target['active'])
+            new_pass = col_d.text_input("Reset Password", type="password", help="Dejar vacío para mantener")
+            
+            if st.form_submit_button("Actualizar Perfil"):
+                sql = 'UPDATE "Users" SET name = :n, role = :r, active = :a'
+                params = {"n": new_name, "r": new_role, "a": is_active, "id": sel_uid}
+                
+                if new_pass:
+                    sql += ', password = :p'
+                    params["p"] = bcrypt.hashpw(new_pass.encode(), bcrypt.gensalt()).decode()
+                
+                sql += ' WHERE id = :id'
+                
+                if run_transaction(conn, sql, params):
+                    st.success("Perfil actualizado.")
+                    time.sleep(1); st.rerun()
+
+# --- Main View ---
+
 def show():
     st.title("🎛️ Torre de Control")
     conn = get_db_connection()
     if not conn: return
 
+    # Definimos las pestañas
     tabs = st.tabs(["📊 Dashboard", "🛠️ Editor Logs", "🏦 Bancos", "🔔 Noticias", "👥 Usuarios"])
+    
+    # 1. Dashboard
     with tabs[0]:
         total_bancos, df_logs = fetch_global_kpis(conn)
         _render_dashboard(conn, df_logs, total_bancos)
-    with tabs[1]: _render_log_editor(conn)
-    # Agregar las llamadas a las otras funciones según necesites...
+    
+    # 2. Editor (Quirófano)
+    with tabs[1]: 
+        _render_log_editor(conn)
+    
+    # 3. Bancos
+    with tabs[2]:
+        _render_bank_manager(conn)
+
+    # 4. Noticias
+    with tabs[3]:
+        _render_updates_manager(conn)
+
+    # 5. Usuarios
+    with tabs[4]:
+        _render_user_manager(conn)
 
 if __name__ == "__main__":
     show()
