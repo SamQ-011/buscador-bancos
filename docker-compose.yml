@@ -6,6 +6,8 @@ services:
     image: postgres:15-alpine
     container_name: cordoba_db
     restart: always
+    # OPTIMIZACIÓN: Permite hasta 200 conexiones simultáneas (evita el error 'too many clients')
+    command: postgres -c 'max_connections=200'
     env_file:
       - .env
     volumes:
@@ -27,6 +29,8 @@ services:
       - .env
     ports:
       - "8501:8501"
+    # OPTIMIZACIÓN: Asigna 2GB de memoria compartida para que el renderizado no colapse con 80 personas
+    shm_size: '2gb'
     networks:
       - cordoba_net
 

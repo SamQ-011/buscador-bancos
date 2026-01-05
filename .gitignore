@@ -1,9 +1,32 @@
-# Ignorar secretos y configuraciones locales
-.streamlit/secrets.toml
+# --- Seguridad (CRÍTICO) ---
 .env
+.streamlit/secrets.toml
 
-# Ignorar archivos basura de Python
+# --- Python ---
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
 
+# --- Sistema Operativo (Basura que generan Windows y Mac) ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- IDEs (Configuraciones de VS Code o PyCharm que son solo tuyas) ---
+.vscode/
+.idea/
+
+# --- Datos Locales (Opcional, por si generas archivos temporales) ---
+*.csv
+*.xlsx
 migrar_datos.py
+# Si en algún momento bajas logs locales
+*.log
