@@ -9,7 +9,7 @@ try:
     import services.auth_service as auth_service
     
     # IMPORTAMOS TODAS LAS VISTAS (Ya no están comentadas)
-    from vistas import login, buscador, updates, inicio, notas, perfil, admin_panel
+    from vistas import login, buscador, updates, inicio, notas, perfil, admin_panel, lab_parser
 
 except ImportError as e:
     st.error(f"Error cargando módulos: {e}")
@@ -93,7 +93,8 @@ def main():
                 "🔍 Buscador": buscador,
                 "📝 Notas": notas,
                 "🔔 Novedades": updates,
-                "⚙️ Perfil": perfil
+                "⚙️ Perfil": perfil,
+                "⚙️ Parser": lab_parser
             }
         else:
             # Vistas para Agentes / Usuarios normales
@@ -125,4 +126,5 @@ def main():
             rutas[opcion].show()
 
 if __name__ == "__main__":
+
     main()
