@@ -1,67 +1,56 @@
-# services/auth_service.py
 import bcrypt
 from sqlalchemy import text
 import pandas as pd
 
 def login_user(conn, username, password):
-    """
-    Verifica credenciales. Retorna el objeto usuario si es correcto, o None.
-    """
+    """Verifica credenciales. Retorna dict usuario o None."""
     if not conn: return None
-
     try:
-        # Buscamos el usuario
+        user = get_user_by_username(conn, username)
+        if not user: return None
+
+        stored_hash = user['password']
+        if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
+            return user
+        return None
+    except Exception as e:
+        print(f"Auth Error: {e}")
+        return None
+
+def get_user_by_username(conn, username):
+    """Busca un usuario por username sin validar password (para cookies)."""
+    if not conn: return None
+    try:
         query = 'SELECT * FROM "Users" WHERE username = :u'
         df = conn.query(query, params={"u": username}, ttl=0)
         
-        if df.empty:
-            return None
-
-        user = df.iloc[0]
-        stored_hash = user['password']
-
-        # Comparamos hash
-        if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
-            return user
-            
-        return None
-
+        if df.empty: return None
+        return df.iloc[0].to_dict() # Retornamos diccionario para consistencia
     except Exception as e:
-        print(f"Auth Service Error (Login): {e}")
+        print(f"User Fetch Error: {e}")
         return None
 
 def update_credentials(conn, username, current_pass, new_pass):
-    """
-    Actualiza la contraseña. Retorna (True, "Mensaje") o (False, "Error").
-    """
-    if not conn: return False, "Database unavailable."
-
+    """Actualiza la contraseña."""
+    if not conn: return False, "DB offline"
     try:
-        # 1. Obtener hash actual
-        query = 'SELECT password FROM "Users" WHERE username = :u'
-        df = conn.query(query, params={"u": username}, ttl=0)
-        
-        if df.empty:
-            return False, "User record not found."
+        user = get_user_by_username(conn, username)
+        if not user: return False, "Usuario no encontrado"
             
-        stored_hash = df.iloc[0]['password']
-
-        # 2. Verificar contraseña actual
+        stored_hash = user['password']
         if not bcrypt.checkpw(current_pass.encode('utf-8'), stored_hash.encode('utf-8')):
-            return False, "Current password incorrect."
+            return False, "Contraseña actual incorrecta"
 
-        # 3. Generar nuevo hash
         new_hash = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
-        # 4. Actualizar en BD
-        update_sql = text('UPDATE "Users" SET password = :p WHERE username = :u')
-        
+        # Update transaccional
         with conn.session as s:
-            s.execute(update_sql, {"p": new_hash, "u": username})
+            s.execute(
+                text('UPDATE "Users" SET password = :p WHERE username = :u'), 
+                {"p": new_hash, "u": username}
+            )
             s.commit()
             
-        return True, "Password updated successfully."
-
+        return True, "Contraseña actualizada correctamente"
     except Exception as e:
-        print(f"Auth Service Error (Update): {e}")
-        return False, f"System Error: {e}"
+        return False, f"Error: {e}"
