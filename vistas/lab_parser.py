@@ -1,7 +1,6 @@
 import streamlit as st
 import re
 import pandas as pd
-from datetime import datetime
 
 def parse_crm_text(raw_text):
     """
@@ -10,15 +9,20 @@ def parse_crm_text(raw_text):
     data = {}
     
     # --- 1. DATOS DE IDENTIFICACIÓN ---
+    
     # ID: Busca CORDOBA- seguido de digitos
     match_id = re.search(r"(CORDOBA-\d+)", raw_text)
     if match_id: data['cordoba_id'] = match_id.group(1)
 
-    # Nombre: Asumimos que es la primera línea que no está vacía o cerca de "Purchaser"
-    # Estrategia: Buscar la línea anterior a "Debt Settlement" o "Purchaser"
+    # Nombre: Limpieza avanzada
+    # Tomamos la primera línea no vacía
     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
     if lines:
-        data['raw_name_guess'] = lines[0] # Fallback simple
+        raw_line = lines[0]
+        # CORRECCIÓN: Eliminamos "Purchaser X Eligible" y cualquier cosa que siga
+        # Usamos Regex para borrar "Purchaser" + digitos + "Eligible"
+        clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
+        data['raw_name_guess'] = clean_name.strip()
 
     # Idioma
     match_lang = re.search(r"Language:\s*(\w+)", raw_text, re.IGNORECASE)
@@ -30,7 +34,6 @@ def parse_crm_text(raw_text):
 
     # --- 2. DATOS DE CAMPAÑA / AFILIADO ---
     # Marketing Company (Suele ser el Afiliado real)
-    # Buscamos "Marketing Company" y tomamos el resto de la línea o la siguiente
     match_mkt = re.search(r"Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
     if match_mkt and len(match_mkt.group(1).strip()) > 1:
         data['marketing_company'] = match_mkt.group(1).strip()
@@ -44,8 +47,7 @@ def parse_crm_text(raw_text):
     def clean_money(val):
         return float(val.replace('$','').replace(',',''))
 
-    # Deuda Total
-    # Busca "Debt:" o "Total Debt:" seguido de precio
+    # Deuda Total (Soporta "Debt:" y "Total Debt:")
     match_debt = re.search(r"(?:Total )?Debt:\s*\$([\d,]+\.\d{2})", raw_text)
     if match_debt: data['total_debt'] = clean_money(match_debt.group(1))
 
@@ -78,7 +80,7 @@ def parse_crm_text(raw_text):
 def show():
     st.title("🧪 Laboratorio de Parsing (Admin Only)")
     st.markdown("""
-    Pega aquí el texto completo copiado (Ctrl+A -> Ctrl+C) desde el perfil de CRM (Forth).
+    Pega aquí el texto completo copiado (**Ctrl+A -> Ctrl+C**) desde el perfil de CRM (Forth).
     El sistema analizará qué datos puede extraer automáticamente.
     """)
 
@@ -117,7 +119,12 @@ def show():
             ])
             st.dataframe(df_display, hide_index=True, use_container_width=True)
 
-            st.success("✅ Estructura válida para reportes futuros")
+            # Validación visual
+            if 'cordoba_id' in res and 'raw_name_guess' in res:
+                st.success("✅ Estructura válida para generar nota")
+            else:
+                st.warning("⚠️ Faltan datos críticos (ID o Nombre)")
+
         else:
             st.info("Esperando datos...")
             st.caption("Copia todo el texto de una ficha de cliente y pégalo a la izquierda.")
