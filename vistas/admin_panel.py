@@ -1,73 +1,26 @@
+# vistas/admin_panel.py
 import time
 import pytz
-import bcrypt
 import io
 import pandas as pd
 import altair as alt
 import streamlit as st
-from datetime import datetime, timedelta
-from sqlalchemy import text
+from datetime import datetime
 
-# --- IMPORTACIÓN DE CONEXIÓN ---
+# --- IMPORTACIONES MODULARIZADAS ---
 try:
     from conexion import get_db_connection
 except ImportError:
     from conexion import get_db_connection
 
-# --- Helper para Transacciones (Escritura) ---
+# Importamos el nuevo servicio
+import services.admin_service as admin_service
 
-def run_transaction(conn, query_str: str, params: dict = None):
-    """Ejecuta una operación de escritura de forma segura."""
-    try:
-        with conn.session as session:
-            session.execute(text(query_str), params if params else {})
-            session.commit()
-        return True
-    except Exception as e:
-        st.error(f"Error en transacción: {e}")
-        return False
-
-# --- Backend / Data Layer ---
-
-def fetch_global_kpis(conn):
-    """Recupera métricas operativas usando SQL."""
-    if not conn: return 0, pd.DataFrame()
-    try:
-        df_count = conn.query('SELECT COUNT(*) as total FROM "Creditors"', ttl=0)
-        total_bancos = df_count.iloc[0]['total'] if not df_count.empty else 0
-        
-        # Logs desde hace 48 horas para asegurar cobertura de zona horaria
-        yesterday_utc = (datetime.utcnow() - timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
-        logs_query = 'SELECT * FROM "Logs" WHERE created_at >= :yesterday AND agent != \'test\''
-        df_logs = conn.query(logs_query, params={"yesterday": yesterday_utc}, ttl=0)
-            
-        return total_bancos, df_logs
-    except Exception as e:
-        st.error(f"KPI Fetch Error: {e}")
-        return 0, pd.DataFrame()
-
-def fetch_agent_list(conn):
-    """Retorna lista de agentes activos."""
-    try:
-        df = conn.query('SELECT username FROM "Users" WHERE active = TRUE ORDER BY username', ttl=60)
-        return df['username'].tolist()
-    except:
-        return []
-
-def fetch_user_map(conn):
-    """Retorna diccionario {username: name_completo}."""
-    try:
-        df = conn.query('SELECT username, name FROM "Users"', ttl=600)
-        return pd.Series(df.name.values, index=df.username).to_dict()
-    except:
-        return {}
-
-# --- UI Components (Tabs Existentes) ---
+# --- UI Components ---
 
 def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
     """Tab 1: Visualización de métricas y exportación."""
     df_today = pd.DataFrame()
-    # Usamos la fecha actual en la zona horaria de la operación (ET)
     today_et = datetime.now(pytz.timezone('US/Eastern')).date()
 
     if not df_raw.empty and 'created_at' in df_raw.columns:
@@ -80,7 +33,6 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
     
     if not df_today.empty:
         total_calls = len(df_today)
-        # Filtro robusto para ventas (Completed pero no "Not Completed")
         sales = len(df_today[df_today['result'].str.contains('Completed', case=False, na=False) & 
                              ~df_today['result'].str.contains('Not', case=False, na=False)])
         active_agents = df_today['agent'].nunique()
@@ -126,38 +78,21 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
         start_date = c_d1.date_input("Desde", value=datetime.now().replace(day=1))
         end_date = c_d2.date_input("Hasta", value=datetime.now())
         
-        agent_opts = ["TODOS (Global)"] + fetch_agent_list(conn)
+        agent_opts = ["TODOS (Global)"] + admin_service.fetch_agent_list(conn)
         target_agent = c_filt.selectbox("Filtrar Agente", agent_opts)
         
         if st.button("Generar Reporte Excel", type="primary"):
             try:
-                # CORRECCIÓN: Rango de tiempo completo y búsqueda ILIKE para evitar reportes vacíos
-                base_query = """
-                    SELECT * FROM "Logs" 
-                    WHERE created_at >= :start 
-                    AND created_at <= :end
-                """
-                params = {
-                    "start": f"{start_date} 00:00:00",
-                    "end": f"{end_date} 23:59:59"
-                }
-                
-                if "TODOS" not in target_agent:
-                    base_query += " AND agent ILIKE :target"
-                    params["target"] = target_agent
-                else:
-                    base_query += " AND agent != 'test'"
-                
-                df_export = conn.query(base_query + " ORDER BY created_at DESC", params=params, ttl=0)
+                # Llamada al servicio para obtener datos
+                df_export = admin_service.fetch_logs_for_export(conn, start_date, end_date, target_agent)
                 
                 if not df_export.empty:
-                    user_map = fetch_user_map(conn)
+                    user_map = admin_service.fetch_user_map(conn)
                     output = io.BytesIO()
                     
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         # Resumen Centralizador
                         summary_data = []
-                        # Normalizamos agentes para el conteo
                         agents = sorted(df_export['agent'].unique(), key=lambda x: x.lower())
                         
                         for idx, ag in enumerate(agents):
@@ -186,7 +121,6 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                                 'RESULT': df_ag['result'],
                                 'LANGUAGE': df_ag['client_language']
                             })
-                            # Nombre de hoja limitado a 31 caracteres (requisito Excel)
                             df_final.to_excel(writer, sheet_name=str(ag)[:31], index=False)
 
                     st.download_button(
@@ -205,7 +139,7 @@ def _render_log_editor(conn):
     search_id = st.text_input("Buscar por ID Córdoba:").strip()
     if not search_id: return
 
-    df_res = conn.query('SELECT * FROM "Logs" WHERE cordoba_id = :cid', params={"cid": search_id}, ttl=0)
+    df_res = admin_service.fetch_log_by_cordoba_id(conn, search_id)
     if df_res.empty:
         st.warning("ID no encontrado.")
         return
@@ -215,12 +149,9 @@ def _render_log_editor(conn):
         new_res = st.text_input("Resultado", record['result'])
         new_comm = st.text_area("Comentarios", record['comments'])
         if st.form_submit_button("Actualizar"):
-            sql = 'UPDATE "Logs" SET result = :res, comments = :comm WHERE id = :id'
-            if run_transaction(conn, sql, {"res": new_res, "comm": new_comm, "id": record['id']}):
+            if admin_service.update_log_entry(conn, record['id'], new_res, new_comm):
                 st.success("Actualizado.")
                 st.rerun()
-
-# --- GESTORES ADICIONALES (Implementación Completa) ---
 
 def _render_bank_manager(conn):
     """Tab 3: Gestión de Acreedores."""
@@ -233,14 +164,13 @@ def _render_bank_manager(conn):
             abbrev = st.text_input("Abreviación (Alias)")
             if st.button("Agregar Banco", use_container_width=True):
                 if name:
-                    sql = 'INSERT INTO "Creditors" (name, abreviation) VALUES (:name, :abbr)'
-                    if run_transaction(conn, sql, {"name": name, "abbr": abbrev}):
+                    if admin_service.create_creditor(conn, name, abbrev):
                         st.rerun()
     
     with c_edit:
         q = st.text_input("🔍 Filtrar bancos...", label_visibility="collapsed")
         if q:
-            df_banks = conn.query('SELECT * FROM "Creditors" WHERE name ILIKE :q LIMIT 15', params={"q": f"%{q}%"}, ttl=0)
+            df_banks = admin_service.search_creditors(conn, q)
             banks = df_banks.to_dict('records')
             
             if banks:
@@ -254,11 +184,10 @@ def _render_bank_manager(conn):
                     c_del, c_upd = st.columns([1, 1])
                     
                     if c_del.form_submit_button("🗑️ Eliminar"):
-                        if run_transaction(conn, 'DELETE FROM "Creditors" WHERE id = :id', {"id": sel_id}):
+                        if admin_service.delete_creditor(conn, sel_id):
                             st.rerun()
                     if c_upd.form_submit_button("Actualizar", type="primary"):
-                        sql = 'UPDATE "Creditors" SET name = :n, abreviation = :a WHERE id = :id'
-                        if run_transaction(conn, sql, {"n": n_val, "a": a_val, "id": sel_id}):
+                        if admin_service.update_creditor(conn, sel_id, n_val, a_val):
                             st.rerun()
 
 def _render_updates_manager(conn):
@@ -274,17 +203,12 @@ def _render_updates_manager(conn):
             
             if st.form_submit_button("Publicar", use_container_width=True):
                 if tit and msg:
-                    sql = """
-                        INSERT INTO "Updates" (date, title, message, category, active) 
-                        VALUES (:date, :tit, :msg, :cat, TRUE)
-                    """
-                    params = {"date": datetime.now().strftime('%Y-%m-%d'), "tit": tit, "msg": msg, "cat": cat}
-                    if run_transaction(conn, sql, params):
+                    if admin_service.create_update(conn, tit, msg, cat):
                         st.rerun()
 
     with c2:
         st.markdown("**Mensajes Activos**")
-        df_upd = conn.query('SELECT * FROM "Updates" WHERE active = TRUE ORDER BY date DESC', ttl=0)
+        df_upd = admin_service.fetch_active_updates(conn)
         updates = df_upd.to_dict('records')
         
         for u in updates:
@@ -293,7 +217,7 @@ def _render_updates_manager(conn):
                 st.markdown(f"<span style='color:{color}; font-weight:bold'>[{u['category']}] {u['title']}</span>", unsafe_allow_html=True)
                 st.write(u['message'])
                 if st.button("Archivar", key=f"arc_{u['id']}"):
-                    if run_transaction(conn, 'UPDATE "Updates" SET active = FALSE WHERE id = :id', {"id": u['id']}):
+                    if admin_service.archive_update(conn, u['id']):
                         st.rerun()
 
 def _render_user_manager(conn):
@@ -310,17 +234,12 @@ def _render_user_manager(conn):
             
             if st.form_submit_button("Crear Usuario", use_container_width=True):
                 if u_user and u_pass:
-                    hashed = bcrypt.hashpw(u_pass.encode(), bcrypt.gensalt()).decode()
-                    sql = """
-                        INSERT INTO "Users" (username, name, password, role, active) 
-                        VALUES (:u, :n, :p, :r, TRUE)
-                    """
-                    if run_transaction(conn, sql, {"u": u_user, "n": u_name, "p": hashed, "r": u_role}):
+                    if admin_service.create_user(conn, u_user, u_name, u_pass, u_role):
                         st.success(f"Usuario {u_user} creado.")
                         time.sleep(1); st.rerun()
 
     with c2:
-        df_users = conn.query('SELECT * FROM "Users" ORDER BY username', ttl=0)
+        df_users = admin_service.fetch_all_users(conn)
         users = df_users.to_dict('records')
         if not users: return
         
@@ -342,16 +261,7 @@ def _render_user_manager(conn):
             new_pass = col_d.text_input("Reset Password", type="password", help="Dejar vacío para mantener")
             
             if st.form_submit_button("Actualizar Perfil"):
-                sql = 'UPDATE "Users" SET name = :n, role = :r, active = :a'
-                params = {"n": new_name, "r": new_role, "a": is_active, "id": sel_uid}
-                
-                if new_pass:
-                    sql += ', password = :p'
-                    params["p"] = bcrypt.hashpw(new_pass.encode(), bcrypt.gensalt()).decode()
-                
-                sql += ' WHERE id = :id'
-                
-                if run_transaction(conn, sql, params):
+                if admin_service.update_user_profile(conn, sel_uid, new_name, new_role, is_active, new_pass):
                     st.success("Perfil actualizado.")
                     time.sleep(1); st.rerun()
 
@@ -367,7 +277,7 @@ def show():
     
     # 1. Dashboard
     with tabs[0]:
-        total_bancos, df_logs = fetch_global_kpis(conn)
+        total_bancos, df_logs = admin_service.fetch_global_kpis(conn)
         _render_dashboard(conn, df_logs, total_bancos)
     
     # 2. Editor (Quirófano)

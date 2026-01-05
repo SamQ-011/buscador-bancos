@@ -1,83 +1,22 @@
-import re
+# vistas/notas.py
 import time
-import pytz
-import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from datetime import datetime
-from sqlalchemy import text
 
-# --- IMPORTACIÓN DE CONEXIÓN ---
+# --- IMPORTACIONES MODULARIZADAS ---
 try:
     from conexion import get_db_connection
 except ImportError:
     from conexion import get_db_connection
 
-# --- Configuration & Templates ---
+# Importamos la lógica de negocio y los datos estáticos
+import services.notes_service as note_service
+from config.templates import REASON_TEMPLATES
 
-REASON_TEMPLATES = {
-    "📞 Contact / Transfer Issues": [
-        {"label": "Call dropped / No answer", "template": "Call dropped. I tried to call back without answer. Please call the Cx back.", "inputs": []},
-        {"label": "Transfer failed / No answer", "template": "Cx wasn't transferred to me. I tried to call back, without answer.", "inputs": []},
-        {"label": "Cx requested Sales Agent", "template": "At the end of the call, the Cx expressed concern about proceeding with the enrollment process and requested to speak with the sales agent again before moving forward.", "inputs": []},
-    ],
-    "🆔 Identity Verification (PII)": [
-        {"label": "DOB Incorrect", "template": "The DOB is incorrect, the correct one is: {}", "inputs": ["Correct DOB"]},
-        {"label": "SSN Incorrect", "template": "The SSN is incorrect, the correct one is: {}", "inputs": ["Correct SSN"]},
-        {"label": "Unable to verify SSN", "template": "The Cx was unable to verify the SSN.", "inputs": []},
-        {"label": "Declined Personal Info", "template": "The Customer declined to provide personal information for verification.", "inputs": []},
-    ],
-    "🏦 Banking Information": [
-        {"label": "Bank Name Incorrect", "template": "The bank name listed for the client’s account is incorrect. The correct name should be: {}", "inputs": ["Correct Bank Name"]},
-        {"label": "Account # Incorrect", "template": "The account number is incorrect. The correct number is: {}", "inputs": ["Correct Account #"]},
-        {"label": "Routing # Incorrect", "template": "The routing number is incorrect. The correct number is: {}", "inputs": ["Correct Routing #"]},
-        {"label": "Unable to verify Bank Info", "template": "The Cx was unable to verify the account number and routing number.", "inputs": []},
-        {"label": "Refused Banking Info", "template": "The Cx refused to provide their banking info.", "inputs": []},
-        {"label": "FULL Banking Correction", "template": "According to the Cx, the banking info should be:\n      Bank: {}\n      Account #: {}\n      Routing #: {}", "inputs": ["Bank Name", "Account #", "Routing #"]},
-    ],
-    "📅 Program Details": [
-        {"label": "Payment Amount Incorrect", "template": "According to the Cx, their payments should be {}, instead of {}.", "inputs": ["Correct Amount", "Wrong Amount"]},
-        {"label": "1st Payment Date Incorrect", "template": "According to the Cx, the first payment date is incorrect. The correct date should be: {}", "inputs": ["Correct Date"]},
-        {"label": "Program Length Incorrect", "template": "According to the Cx, the program length should be {} months, instead of {} months.", "inputs": ["Correct Months", "Wrong Months"]},
-        {"label": "Insufficient Income", "template": "The Cx stated that he/she does not have sufficient income to afford the program.", "inputs": []},
-    ],
-    "🚫 Objections / Legal": [
-        {"label": "Active Military", "template": "The Cx stated that he/she is active military, making him/her ineligible for the program.", "inputs": []},
-        {"label": "Does not recognize debt", "template": "The Cx does not recognize this debt and requires clarification before enrolling in the program: {}", "inputs": ["Which debt?"]},
-        {"label": "Wants to ADD debt", "template": "Cx wants to add another debt.", "inputs": []},
-        {"label": "Remove specific debt", "template": "Cx doesn't want to include this debt in the program: {}", "inputs": ["Which debt?"]},
-        {"label": "Right of Offset Concern", "template": "The Cx is concerned that the right of offset may apply.", "inputs": []},
-        {"label": "Immediate Payments Misconception", "template": "The Cx believed we would begin making payments to the creditors immediately. We clarified that, under the program, payments are only made once an agreement has been reached with the creditors. However, the Cx disagreed.", "inputs": []},
-        {"label": "Credit Score Concern", "template": "The Cx is concerned about their credit score being negatively affected. We explained that credit may be impacted during the program, but the Cx disagreed.", "inputs": []},
-        {"label": "Government Program Misconception", "template": "The Cx believed we were a government program. We clarified that we are a private legal firm, not a government program. However, the Cx chose not to continue with us.", "inputs": []},
-        {"label": "Lawsuit/Sued Concern", "template": "The Cx expressed concern about the possibility of being sued by their creditors. We explained that, if this occurs, they will have our legal representation. However, the Cx was not comfortable with this.", "inputs": []},
-        {"label": "Loan Misconception", "template": "The Cx thought that we were going to loan him money so that the Cx won't have to pay their creditors no more and pay to us instead.", "inputs": []},
-        {"label": "Consolidation Misconception", "template": "The Cx believed we were a consolidation program. We clarified that we are a settlement program, where the Cx makes payments to us and we use those funds to settle their debts. However, the Cx chose not to continue with us.", "inputs": []},
-    ]
-}
-
-# --- Infrastructure ---
-
-def run_transaction(conn, query_str: str, params: dict = None):
-    """Ejecuta INSERT de forma segura."""
-    try:
-        with conn.session as session:
-            session.execute(text(query_str), params if params else {})
-            session.commit()
-        return True
-    except Exception as e:
-        st.error(f"Error en transacción: {e}")
-        return False
-
-# --- Utils & Security ---
-
-def _sanitize_text_for_db(text: str) -> str:
-    """Masks digits for DB storage."""
-    if not text: return ""
-    return re.sub(r'\b\d{3,}\b', '[####]', text)
+# --- Utils de Interfaz (UI Only) ---
 
 def _is_duplicate_submission(record_id: str, cooldown: int = 60) -> bool:
-    """Prevents double submissions."""
+    """Evita doble clic en el botón de guardar (Frontend logic)."""
     now = time.time()
     if "last_save_time" in st.session_state:
         elapsed = now - st.session_state.last_save_time
@@ -89,10 +28,8 @@ def _register_successful_save(record_id: str):
     st.session_state.last_save_time = time.time()
     st.session_state.last_save_id = record_id
 
-# ... (Mantener importaciones y REASON_TEMPLATES igual)
-
 def _inject_copy_button(text_content: str, unique_key: str):
-    """Boton de copia con soporte para HTTP (No seguro) y HTTPS."""
+    """Componente visual de botón de copia."""
     if not text_content: return
     safe_text = (text_content.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
     html = f"""
@@ -105,23 +42,16 @@ def _inject_copy_button(text_content: str, unique_key: str):
             btn.style.backgroundColor = '#d1e7dd';
             setTimeout(() => {{ btn.innerHTML = '📋 Copiar Nota'; btn.style.backgroundColor = '#f0f2f6'; }}, 2000);
         }};
-
-        // Intento con API moderna (HTTPS)
         if (navigator.clipboard && navigator.clipboard.writeText) {{
-            navigator.clipboard.writeText(text).then(updateBtn, function(err) {{ console.error('Error', err); }});
+            navigator.clipboard.writeText(text).then(updateBtn);
         }} else {{
-            // Fallback para HTTP (No seguro)
             const textArea = document.createElement("textarea");
             textArea.value = text;
             document.body.appendChild(textArea);
             textArea.select();
-            try {{
-                document.execCommand('copy');
-                updateBtn();
-            }} catch (err) {{
-                console.error('Fallback Error', err);
-            }}
+            document.execCommand('copy');
             document.body.removeChild(textArea);
+            updateBtn();
         }}
     }}
     </script>
@@ -133,77 +63,7 @@ def _inject_copy_button(text_content: str, unique_key: str):
     """
     components.html(html, height=60)
 
-def fetch_agent_history(conn, username: str, limit: int = 5) -> pd.DataFrame:
-    """Recupera historial usando búsqueda insensible a mayúsculas."""
-    if not conn: return pd.DataFrame()
-    try:
-        # Quitamos text() de la query de conn.query y usamos ILIKE para evitar fallos de mayúsculas
-        query = 'SELECT created_at, result, cordoba_id FROM "Logs" WHERE agent ILIKE :u ORDER BY created_at DESC LIMIT :l'
-        df = conn.query(query, params={"u": username, "l": limit}, ttl=0)
-        
-        if not df.empty:
-            df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
-            df['Date'] = df['created_at'].dt.tz_convert('US/Eastern').dt.strftime('%m/%d/%Y %I:%M %p')
-            return df[['Date', 'result', 'cordoba_id']]
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"Error history: {e}")
-        return pd.DataFrame()
-
-# ... (El resto de notas.py se mantiene igual)
-
-@st.cache_data(ttl=3600)
-def fetch_affiliates_list():
-    """Fetches the list of active affiliates from DB (SQL)."""
-    # Usamos conexión centralizada
-    conn = get_db_connection()
-    if not conn: return []
-    
-    try:
-        df = conn.query('SELECT name FROM "Affiliates" ORDER BY name', ttl=3600)
-        return df['name'].tolist()
-    except Exception as e:
-        print(f"Error fetching affiliates: {e}")
-        return []
-
-def commit_log(conn, payload: dict) -> bool:
-    """Persists the log entry to SQL DB with PII masking."""
-    if not conn:
-        st.error("Database unavailable.")
-        return False
-
-    try:
-        comments_safe = _sanitize_text_for_db(payload['comments'])
-        
-        # SQL INSERT
-        sql = """
-            INSERT INTO "Logs" (
-                created_at, user_id, agent, customer, cordoba_id, 
-                result, comments, affiliate, info_until, client_language
-            ) VALUES (
-                :created_at, :uid, :agent, NULL, :cid, 
-                :res, :comm, :aff, :info, :lang
-            )
-        """
-        
-        params = {
-            "created_at": datetime.now(pytz.utc), 
-            "uid": int(payload['user_id']),
-            "agent": payload['username'],
-            "cid": payload['cordoba_id'],
-            "res": payload['result'],
-            "comm": comments_safe,
-            "aff": payload['affiliate'],
-            "info": payload['info_until'],
-            "lang": payload['client_language']
-        }
-        
-        return run_transaction(conn, sql, params)
-    except Exception as e:
-        st.error(f"Commit Error: {e}")
-        return False
-
-# --- CALLBACKS & UI ---
+# --- Callbacks de Limpieza ---
 
 def limpiar_form_completed():
     keys = ["c_name", "c_id", "c_aff", "nota_c_texto", "area_c_edit"]
@@ -215,6 +75,8 @@ def limpiar_form_not_completed():
     for k in keys:
         if k in st.session_state: st.session_state[k] = ""
 
+# --- Modales ---
+
 @st.dialog("🛡️ Confirm Submission")
 def render_confirm_modal(conn, payload: dict):
     st.write("Please verify details before committing to database.")
@@ -225,7 +87,6 @@ def render_confirm_modal(conn, payload: dict):
         st.info(payload['cordoba_id'])
         st.caption("Customer Name")
         st.info(payload['customer'])
-        st.caption("(Note: Name will NOT be saved to DB)")
     with c2:
         st.caption("Result")
         if "Completed" in payload['result'] and "Not" not in payload['result']:
@@ -242,7 +103,8 @@ def render_confirm_modal(conn, payload: dict):
         st.rerun()
             
     if col_ok.button("✅ Confirm & Save", type="primary", use_container_width=True):
-        if commit_log(conn, payload):
+        # LLAMADA AL SERVICIO (Lógica separada)
+        if note_service.commit_log(conn, payload):
             _register_successful_save(payload['cordoba_id'])
             
             if "Completed" in payload['result'] and "Not" not in payload['result']:
@@ -253,12 +115,11 @@ def render_confirm_modal(conn, payload: dict):
             time.sleep(1.0)
             st.rerun()
 
-# --- Main View ---
+# --- Vista Principal ---
 
 def show():
     st.title("📝 Notes Generator")
     
-    # CONEXIÓN CENTRALIZADA
     conn = get_db_connection()
 
     # Initialization
@@ -274,7 +135,8 @@ def show():
     user_id = st.session_state.get("user_id", None)
     username = st.session_state.get("username", "Unknown")
 
-    affiliates_list = fetch_affiliates_list()
+    # CARGA DE DATOS DESDE SERVICIO
+    affiliates_list = note_service.fetch_affiliates_list(conn)
     if not affiliates_list:
         affiliates_list = ["Error loading list", "Patriot", "Cordoba Legal"]
     
@@ -315,9 +177,9 @@ def show():
                     clean_id = ''.join(filter(str.isdigit, c_id))
                     
                     if len(clean_id) != 10:
-                        st.error(f"❌ Error: El ID Córdoba debe tener exactamente 10 dígitos. (Actual: {len(clean_id)})")
+                        st.error(f"❌ Error: ID must have 10 digits. (Actual: {len(clean_id)})")
                     elif _is_duplicate_submission(clean_id):
-                        st.warning(f"⚠️ Duplicate detected for ID {clean_id}. Please wait.")
+                        st.warning(f"⚠️ Duplicate detected for ID {clean_id}.")
                     else:
                         payload = {
                             "user_id": user_id, "username": username,
@@ -373,7 +235,7 @@ def show():
 
             st.divider()
 
-            # Dynamic Script Builder
+            # USO DE TEMPLATES DESDE CONFIG
             with st.container(border=True):
                 cat_col, reason_col = st.columns([1, 2])
                 with cat_col:
@@ -428,7 +290,7 @@ def show():
                     clean_id = ''.join(filter(str.isdigit, nc_id))
                     
                     if len(clean_id) != 10:
-                        st.error(f"❌ Error: El ID Córdoba debe tener exactamente 10 dígitos. (Actual: {len(clean_id)})")
+                        st.error(f"❌ Error: ID must have 10 digits. (Actual: {len(clean_id)})")
                     elif _is_duplicate_submission(clean_id):
                         st.warning(f"⚠️ Duplicate detected for ID {clean_id}.")
                     else:
@@ -482,17 +344,15 @@ def show():
             if st.session_state.nota_tp_texto:
                 _inject_copy_button(st.session_state.nota_tp_texto, "copy_tp")
 
-    # --- RECENT HISTORY ---
+    # --- HISTORIAL DESDE SERVICIO ---
     st.markdown("---")
     st.subheader(f"📜 Recent Activity ({username})")
     
-    df_hist = fetch_agent_history(conn, username)
+    df_hist = note_service.fetch_agent_history(conn, username)
     if not df_hist.empty:
         st.dataframe(df_hist, hide_index=True, use_container_width=True)
     else:
         st.info("No records found for today.")
 
 if __name__ == "__main__":
-
     show()
-

@@ -1,55 +1,15 @@
+# vistas/perfil.py
 import time
-import bcrypt
 import streamlit as st
-from sqlalchemy import text
 
-# --- IMPORTACIÓN DE CONEXIÓN ---
+# --- IMPORTACIONES ---
 try:
     from conexion import get_db_connection
 except ImportError:
     from conexion import get_db_connection
 
-# --- Backend Logic ---
-
-def update_credentials(username: str, current_pass: str, new_pass: str) -> bool:
-    """
-    Verifies current password hash and updates DB with new bcrypt hash (SQL).
-    """
-    # USAMOS CONEXIÓN CENTRALIZADA
-    conn = get_db_connection()
-    if not conn: return False
-
-    try:
-        # 1. Obtener hash actual (Lectura con string simple)
-        query = 'SELECT password FROM "Users" WHERE username = :u'
-        df = conn.query(query, params={"u": username}, ttl=0)
-        
-        if df.empty:
-            st.error("User record not found.")
-            return False
-            
-        stored_hash = df.iloc[0]['password']
-
-        # 2. Verificar contraseña actual
-        if not bcrypt.checkpw(current_pass.encode('utf-8'), stored_hash.encode('utf-8')):
-            st.error("Current password incorrect.")
-            return False
-
-        # 3. Generar nuevo hash y actualizar
-        new_hash = bcrypt.hashpw(new_pass.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        # Para escrituras (UPDATE/INSERT) dentro de session, sí usamos text() para seguridad
-        update_sql = text('UPDATE "Users" SET password = :p WHERE username = :u')
-        
-        with conn.session as s:
-            s.execute(update_sql, {"p": new_hash, "u": username})
-            s.commit()
-            
-        return True
-
-    except Exception as e:
-        st.error(f"Update failed: {e}")
-        return False
+# Importamos el nuevo servicio
+import services.auth_service as auth_service
 
 # --- UI Rendering ---
 
@@ -89,7 +49,7 @@ def show():
         st.markdown("<br>", unsafe_allow_html=True)
         
         if st.form_submit_button("Update Credentials", type="primary"):
-            # Frontend Validation
+            # Validaciones Frontend (Rápidas)
             if not current_pw or not new_pw:
                 st.warning("All fields are required.")
                 return
@@ -102,12 +62,17 @@ def show():
                 st.warning("Password too short (min 6 chars).")
                 return
 
-            # Backend Call
-            if update_credentials(username, current_pw, new_pw):
-                st.success("Password updated successfully.")
+            # LLAMADA AL SERVICIO (Backend)
+            conn = get_db_connection()
+            success, message = auth_service.update_credentials(conn, username, current_pw, new_pw)
+            
+            if success:
+                st.success(message)
                 st.balloons()
                 time.sleep(1.5)
                 st.rerun()
+            else:
+                st.error(message)
 
 if __name__ == "__main__":
     show()

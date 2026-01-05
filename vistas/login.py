@@ -1,48 +1,16 @@
+# vistas/login.py
 import time
-import bcrypt
 import streamlit as st
 from datetime import datetime, timedelta
 
-# --- IMPORTACIÓN DE CONEXIÓN ---
-# Intentamos importar desde la raíz
+# --- IMPORTACIONES ---
 try:
     from conexion import get_db_connection
 except ImportError:
-    # Fallback por si la estructura cambia
     from conexion import get_db_connection
 
-# --- Backend Logic ---
-
-def login_user(username, password):
-    """
-    Validates credentials against PostgreSQL using bcrypt.
-    """
-    # USAMOS LA CONEXIÓN CENTRALIZADA
-    conn = get_db_connection()
-    if not conn:
-        return None
-
-    try:
-        # Consulta SQL simple (sin text())
-        query = 'SELECT * FROM "Users" WHERE username = :u'
-        
-        # Ejecutamos la consulta
-        df = conn.query(query, params={"u": username}, ttl=0)
-        
-        if df.empty:
-            return None
-
-        user = df.iloc[0]
-        stored_hash = user['password']
-
-        # Verificar contraseña con bcrypt
-        if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
-            return user
-        return None
-
-    except Exception as e:
-        st.error(f"Login Error: {e}")
-        return None
+# Importamos el nuevo servicio
+import services.auth_service as auth_service
 
 # --- UI Rendering ---
 
@@ -60,7 +28,11 @@ def show(cookie_manager):
             
             if st.button("Sign In", use_container_width=True, type="primary"):
                 if username and password:
-                    user = login_user(username, password)
+                    # Obtenemos conexión para pasarla al servicio
+                    conn = get_db_connection()
+                    
+                    # LLAMADA AL SERVICIO (Lógica separada)
+                    user = auth_service.login_user(conn, username, password)
                     
                     if user is not None:
                         if user['active']:
