@@ -154,7 +154,7 @@ def _render_log_editor(conn):
                 st.rerun()
 
 def _render_bank_manager(conn):
-    """Tab 3: Gestión de Acreedores (Optimizado y Sin Redundancias)."""
+    """Tab 3: Gestión de Acreedores (Diseño Directo - Sin Selectbox)."""
     c_add, c_edit = st.columns([1, 2], gap="large")
     
     # --- COLUMNA IZQUIERDA: CREAR ---
@@ -173,72 +173,69 @@ def _render_bank_manager(conn):
                 else:
                     st.error("Nombre obligatorio.")
 
-    # --- COLUMNA DERECHA: EDITAR ---
+    # --- COLUMNA DERECHA: EDITAR (Buscador Puro) ---
     with c_edit:
         st.subheader("Editar Acreedor")
         
-        # 1. Cargamos TODOS los bancos de una vez (es más rápido y limpio para UX)
-        # Asumimos que search_creditors("") devuelve todo.
-        try:
-            df_banks = admin_service.search_creditors(conn, "")
-        except Exception:
-            df_banks = pd.DataFrame()
+        # 1. Input de Texto Puro (El usuario debe escribir)
+        search_query = st.text_input(
+            "Buscar por Abreviación o Nombre:", 
+            placeholder="Ej: FDSB o Macy's...",
+            help="Escribe la abreviación o el nombre y presiona Enter."
+        ).strip()
         
-        if not df_banks.empty:
-            banks = df_banks.to_dict('records')
+        target_bank = None
+        
+        if search_query:
+            # Buscamos en la base de datos solo lo que escribió
+            df_results = admin_service.search_creditors(conn, search_query)
             
-            # 2. EL TRUCO: Formateamos la etiqueta para buscar por ABREVIACIÓN
-            # Formato: "ABREVIACION - Nombre Completo"
-            # Esto permite escribir "MACYS" en el buscador y encontrarlo rápido.
-            b_opts = {
-                b['id']: f"{b['abreviation']} - {b['name']}" if b['abreviation'] else f"{b['name']}" 
-                for b in banks
-            }
-            
-            # 3. Solo el Selectbox (Eliminamos el filtro de texto redundante)
-            sel_id = st.selectbox(
-                "Selecciona un banco (Escribe para buscar por Alias o Nombre):", 
-                options=list(b_opts.keys()), 
-                format_func=lambda x: b_opts[x],
-                help="Puedes escribir la abreviación (ej. FDSB) para encontrarlo rápido."
-            )
-            
-            # Obtener datos del banco seleccionado
-            target = next((b for b in banks if b['id'] == sel_id), None)
-            
-            if target:
-                st.markdown("---") # Separador visual sutil
+            if not df_results.empty:
+                results = df_results.to_dict('records')
                 
-                # 4. Formulario de edición directo
-                with st.container(border=True):
-                    c_id, c_info = st.columns([1, 4])
-                    c_id.caption(f"ID Sistema: {sel_id}")
+                # LOGICA INTELIGENTE:
+                if len(results) == 1:
+                    # CASO IDEAL: Solo 1 coincidencia -> Mostramos formulario directo
+                    target_bank = results[0]
+                    st.caption(f"✅ Coincidencia exacta: {target_bank['name']}")
                     
-                    with st.form("bank_edit_form"):
-                        c_n, c_a = st.columns([2, 1])
-                        # Pre-cargamos los valores
-                        n_val = c_n.text_input("Nombre Entidad", value=target['name'])
-                        a_val = c_a.text_input("Abreviación", value=target['abreviation'])
-                        
-                        col_actions = st.columns([1, 1])
-                        
-                        with col_actions[0]:
-                             # Botón de borrado con confirmación visual (rojo)
-                            if st.form_submit_button("🗑️ Eliminar Registro", use_container_width=True):
-                                if admin_service.delete_creditor(conn, sel_id):
-                                    st.warning("Banco eliminado.")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                        
-                        with col_actions[1]:
-                            # Botón de guardado principal
-                            if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
-                                if admin_service.update_creditor(conn, sel_id, n_val, a_val):
-                                    st.success("Actualizado correctamente.")
-                                    time.sleep(0.5)
-                                    st.rerun()
-        else:
-            st.info("No hay bancos registrados en la base de datos.")
+                else:
+                    # CASO AMBIGUO: Hay varios (ej. buscó "Bank")
+                    st.info(f"Se encontraron {len(results)} bancos. Selecciona el correcto:")
+                    
+                    # Usamos radio buttons en lugar de selectbox (menos clicks)
+                    options = {r['id']: f"{r['abreviation']} - {r['name']}" for r in results}
+                    selected_id = st.radio("Resultados:", list(options.keys()), format_func=lambda x: options[x])
+                    target_bank = next(r for r in results if r['id'] == selected_id)
+            else:
+                st.warning(f"🚫 No se encontró ningún banco con: '{search_query}'")
+
+        # 2. Formulario de Edición (Solo aparece si ya tenemos un banco identificado)
+        if target_bank:
+            st.markdown("---")
+            with st.container(border=True):
+                st.markdown(f"📝 Editando: **{target_bank['name']}**")
+                
+                with st.form("bank_edit_form"):
+                    c_n, c_a = st.columns([2, 1])
+                    n_val = c_n.text_input("Nombre", value=target_bank['name'])
+                    a_val = c_a.text_input("Abrev.", value=target_bank['abreviation'])
+                    
+                    col_actions = st.columns([1, 1.5])
+                    
+                    with col_actions[0]:
+                        if st.form_submit_button("🗑️ Eliminar Registro", use_container_width=True):
+                            if admin_service.delete_creditor(conn, target_bank['id']):
+                                st.warning("Banco eliminado.")
+                                time.sleep(0.5)
+                                st.rerun()
+                    
+                    with col_actions[1]:
+                        if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
+                            if admin_service.update_creditor(conn, target_bank['id'], n_val, a_val):
+                                st.success("Actualizado correctamente.")
+                                time.sleep(0.5)
+                                st.rerun()
 
 def _render_updates_manager(conn):
     """Tab 4: Centro de Mensajes."""
@@ -348,4 +345,5 @@ def show():
 
 if __name__ == "__main__":
     show()
+
 
