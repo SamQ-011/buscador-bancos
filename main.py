@@ -103,7 +103,8 @@ def main():
                 "🔍 Buscador": buscador,
                 "📝 Notas": notas,
                 "🔔 Novedades": updates,
-                "⚙️ Perfil": perfil
+                "⚙️ Perfil": perfil,
+                "⚙️ Parser": lab_parser
             }
         
         # Selector de menú
@@ -128,3 +129,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
