@@ -12,7 +12,7 @@ def sanitize_text_for_db(text_str: str) -> str:
 
 # --- Lectura de Datos (SELECT) ---
 
-def fetch_agent_history(conn, username: str, limit: int = 5):
+def fetch_agent_history(conn, username: str, limit: int = 15):
     if not conn: return pd.DataFrame()
     # Usamos pd.read_sql o conn.query, asumimos conn es st.connection
     query = 'SELECT created_at, result, cordoba_id FROM "Logs" WHERE agent ILIKE :u ORDER BY created_at DESC LIMIT :l'
