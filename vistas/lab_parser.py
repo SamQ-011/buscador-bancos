@@ -1,141 +1,295 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import re
-import pandas as pd
+import time
+from conexion import get_db_connection
+import services.notes_service as note_service
 
-# --- 1. MOTOR DE EXTRACCIÓN (El que ya validamos) ---
+# ==============================================================================
+# 1. UTILS UI
+# ==============================================================================
+
+def _is_duplicate_submission(record_id: str, cooldown: int = 60) -> bool:
+    now = time.time()
+    if "last_save_time" in st.session_state:
+        elapsed = now - st.session_state.last_save_time
+        if elapsed < cooldown and st.session_state.get("last_save_id") == record_id:
+            return True
+    return False
+
+def _register_successful_save(record_id: str):
+    st.session_state.last_save_time = time.time()
+    st.session_state.last_save_id = record_id
+
+def _inject_copy_button(text_content: str, unique_key: str):
+    """Botón HTML/JS para copiar (Funciona en HTTP)."""
+    if not text_content: return
+    safe_text = (text_content.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
+    
+    html = f"""
+    <script>
+    function copyToClipboard_{unique_key}() {{
+        const text = `{safe_text}`;
+        const btn = document.getElementById('btn_{unique_key}');
+        const updateBtn = () => {{
+            btn.innerHTML = '✅ Copied!';
+            btn.style.backgroundColor = '#d1e7dd';
+            btn.style.color = '#0f5132';
+            btn.style.borderColor = '#badbcc';
+            setTimeout(() => {{ 
+                btn.innerHTML = '📋 Copy Note'; 
+                btn.style.backgroundColor = '#f0f2f6'; 
+                btn.style.color = '#31333F';
+                btn.style.borderColor = '#d6d6d8';
+            }}, 2000);
+        }};
+        
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {{
+            document.execCommand('copy');
+            updateBtn();
+        }} catch (err) {{
+            console.error('Fallback copy failed', err);
+        }}
+        document.body.removeChild(textArea);
+    }}
+    </script>
+    <button id="btn_{unique_key}" onclick="copyToClipboard_{unique_key}()" style="
+        width: 100%; background-color: #f0f2f6; color: #31333F; border: 1px solid #d6d6d8; 
+        padding: 0.5rem; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; margin-top: 0px;">
+        📋 Copy Note
+    </button>
+    """
+    components.html(html, height=50)
+
+# ==============================================================================
+# 2. LOGIC (Parser & Recalculator)
+# ==============================================================================
+
 def parse_crm_text(raw_text):
     data = {}
-    
-    # ID
     match_id = re.search(r"(CORDOBA-\d+)", raw_text)
     if match_id: data['cordoba_id'] = match_id.group(1)
 
-    # Nombre (Limpieza de "Purchaser...")
     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
     if lines:
         raw_line = lines[0]
         clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
-        data['raw_name_guess'] = clean_name.strip()
+        data['raw_name_guess'] = clean_name.strip().lower()
 
-    # Idioma
-    match_lang = re.search(r"Language:\s*(\w+)", raw_text, re.IGNORECASE)
-    if match_lang: data['language'] = match_lang.group(1)
-
-    # Email
-    match_email = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", raw_text)
-    if match_email: data['email'] = match_email.group(0)
-
-    # Afiliado / Campaña
+    match_aff_mkt = re.search(r"Affiliate Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
     match_mkt = re.search(r"Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
-    if match_mkt and len(match_mkt.group(1).strip()) > 1:
+    if match_aff_mkt and len(match_aff_mkt.group(1).strip()) > 1:
+        data['marketing_company'] = match_aff_mkt.group(1).strip()
+    elif match_mkt and len(match_mkt.group(1).strip()) > 1:
         data['marketing_company'] = match_mkt.group(1).strip()
     
-    # Deuda Total
-    match_debt = re.search(r"(?:Total )?Debt:\s*\$([\d,]+\.\d{2})", raw_text)
-    if match_debt: 
-        data['total_debt'] = float(match_debt.group(1).replace(',',''))
-
-    # Estado
-    match_geo = re.search(r"\b([A-Z]{2})\s+(\d{5})", raw_text)
-    if match_geo:
-        data['state'] = match_geo.group(1)
-
+    match_lang = re.search(r"Language:\s*(\w+)", raw_text, re.IGNORECASE)
+    if match_lang: data['language'] = match_lang.group(1)
     return data
 
-# --- 2. LÓGICA DE EMPAREJAMIENTO (NUEVO) ---
 def match_affiliate(parsed_affiliate, db_options):
-    """
-    Intenta encontrar el afiliado del texto en la lista oficial del sistema.
-    """
-    if not parsed_affiliate:
-        return None
-    
+    if not parsed_affiliate: return None
     parsed_clean = parsed_affiliate.lower().strip()
-    
-    # Intento 1: Coincidencia Exacta
     for op in db_options:
-        if op.lower().strip() == parsed_clean:
-            return op
-            
-    # Intento 2: Contiene (Ej: "Financial Relief" en "Financial Relief LLC")
+        if op.lower().strip() == parsed_clean: return op
     for op in db_options:
-        if parsed_clean in op.lower():
-            return op
-            
+        if parsed_clean in op.lower(): return op
     return None
 
-# --- 3. INTERFAZ VISUAL ---
-def show():
-    st.title("🧪 Lab: Simulador de Auto-Llenado")
+# --- RECALCULAR NOTA (Lógica Reactiva) ---
+def recalc_note():
+    """Genera el texto de la nota basado en los inputs actuales."""
+    # 1. Parsear datos de nuevo
+    raw_text = st.session_state.get("lp_text", "")
+    parsed = parse_crm_text(raw_text) if raw_text else {}
     
-    # Lista Simulada de Afiliados (Basada en tus fotos)
-    mock_affiliates_list = sorted([
-        "Golden Rise Capital",
-        "Prosperity Financial",
-        "Independence Financial Network 2",
-        "Patriot Option Group",
-        "Plume Finance",
-        "Priority Plus Financial",
-        "Financial Relief",
-        "GotLending",
-        "Freedom Loan Network LLC"
-    ])
+    # 2. Obtener valores de forma SEGURA (.get para evitar crashes)
+    outcome = st.session_state.get("lp_outcome", "❌ Not Completed")
+    reason = st.session_state.get("lp_reason", "")
+    
+    # Afiliado
+    conn = get_db_connection()
+    affiliates_list = sorted(note_service.fetch_affiliates_list(conn))
+    raw_aff = parsed.get('marketing_company', '')
+    suggested_aff = match_affiliate(raw_aff, affiliates_list)
+    final_aff = suggested_aff if suggested_aff else (raw_aff if raw_aff else "Unknown Affiliate")
+    
+    # Datos básicos
+    name = parsed.get('raw_name_guess', 'unknown')
+    cid = parsed.get('cordoba_id', 'unknown')
 
-    # Inicialización de variables de prueba
-    if "test_name" not in st.session_state: st.session_state.test_name = ""
-    if "test_id" not in st.session_state: st.session_state.test_id = ""
-    if "test_aff" not in st.session_state: st.session_state.test_aff = None
-
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        st.subheader("1. Origen (CRM)")
-        raw_input = st.text_area("Pegar Texto Aquí:", height=300, placeholder="Pega el texto de Forth...")
+    # 3. Construir String
+    if "Not Completed" in outcome:
+        stage = st.session_state.get("lp_stage", "All info provided")
+        ret = st.session_state.get("lp_return", "No")
+        trans = st.session_state.get("lp_trans", "Unsuccessful")
         
-        if st.button("⚡ Simular Auto-Llenado", type="primary", use_container_width=True):
-            if raw_input:
-                # A) Extraer datos
-                extracted = parse_crm_text(raw_input)
-                
-                # B) Aplicar a variables de sesión (Simulando notas.py)
-                if 'raw_name_guess' in extracted:
-                    st.session_state.test_name = extracted['raw_name_guess']
-                
-                if 'cordoba_id' in extracted:
-                    st.session_state.test_id = extracted['cordoba_id']
-                
-                # C) Lógica del Afiliado
-                mkt_text = extracted.get('marketing_company', '')
-                found_aff = match_affiliate(mkt_text, mock_affiliates_list)
-                
-                if found_aff:
-                    st.session_state.test_aff = found_aff
-                    st.toast(f"✅ Afiliado vinculado: {found_aff}")
+        stat_title = "Returned" if ret == "Yes" else "Not Returned"
+        final_note = f"❌ WC Not Completed – {stat_title}\nCX: {name} || {cid}\n\n• Reason: {reason}\n\n• Call Progress: {stage}\n• Transfer Status: {trans}\nAffiliate: {final_aff}"
+    else:
+        final_note = f"✅ WC Completed\nCX: {name} || {cid}\nAffiliate: {final_aff}"
+
+    # 4. ACTUALIZAR EL CUADRO DE TEXTO
+    st.session_state.final_note_content = final_note
+
+def limpiar_lab():
+    st.session_state.lp_text = ""
+    st.session_state.lp_reason = ""
+    st.session_state.final_note_content = ""
+
+# ==============================================================================
+# 3. MODAL
+# ==============================================================================
+
+@st.dialog("🛡️ Confirm Submission")
+def render_confirm_modal(conn, payload: dict):
+    st.write("Verifica los detalles antes de guardar.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Customer")
+        st.info(f"{payload['customer']}\n{payload['cordoba_id']}")
+    with c2:
+        st.caption("Outcome")
+        if "Completed" in payload['result'] and "Not" not in payload['result']:
+            st.success(f"🏆 {payload['result']}")
+        else:
+            st.error(f"❌ {payload['result']}")
+        st.caption("Affiliate")
+        st.text(payload['affiliate'])
+
+    if payload['comments']:
+        st.caption("Reason / Comments")
+        st.warning(payload['comments'])
+        
+    with st.expander("View Full Note Content"):
+        st.code(payload.get('full_note_content', 'No content'))
+
+    st.divider()
+    col_cancel, col_ok = st.columns([1, 1])
+    if col_cancel.button("Cancel", use_container_width=True):
+        st.rerun()
+    if col_ok.button("✅ Confirm & Save", type="primary", use_container_width=True):
+        try:
+            if note_service.commit_log(conn, payload):
+                _register_successful_save(payload['cordoba_id'])
+                st.balloons()
+                st.toast("Saved successfully!", icon="💾")
+                time.sleep(1.0)
+                st.rerun()
+        except Exception as e:
+            st.error(f"Error saving: {e}")
+
+# ==============================================================================
+# 4. VISTA PRINCIPAL
+# ==============================================================================
+
+def show():
+    st.markdown("#### 🧪 Smart Note Lab") 
+    try:
+        conn = get_db_connection()
+    except:
+        st.error("DB Connection Failed")
+        return
+
+    # Inicializar estado
+    if "final_note_content" not in st.session_state: st.session_state.final_note_content = ""
+    if "lp_text" not in st.session_state: st.session_state.lp_text = ""
+    if "lp_outcome" not in st.session_state: st.session_state.lp_outcome = "❌ Not Completed"
+
+    col_left, col_right = st.columns([1, 1.2])
+
+    with col_left:
+        # INPUT con callback
+        st.text_area("Paste", height=150, key="lp_text", 
+                     label_visibility="collapsed", 
+                     placeholder="Paste Forth Profile here...",
+                     on_change=recalc_note)
+        
+        st.divider()
+
+        # CONFIG - Outcome con callback
+        st.radio("Outcome", ["❌ Not Completed", "✅ Completed"], 
+                 horizontal=True, 
+                 label_visibility="collapsed",
+                 key="lp_outcome",
+                 on_change=recalc_note)
+        
+        # Lógica visual condicional
+        if "Not Completed" in st.session_state.lp_outcome:
+            st.caption("Call Details:")
+            c1, c2 = st.columns([1.5, 1])
+            with c1:
+                st.selectbox("Progress", ["All info provided", "Banking Info", "Legal Script", "Creditors", "Intro"], 
+                             key="lp_stage", label_visibility="collapsed", on_change=recalc_note)
+            with c2:
+                st.radio("Return?", ["Yes", "No"], horizontal=True, key="lp_return", on_change=recalc_note)
+                st.radio("Transfer?", ["Successful", "Unsuccessful"], horizontal=True, key="lp_trans", on_change=recalc_note)
+        else:
+            st.success(f"Sale Ready")
+
+    with col_right:
+        if "Not Completed" in st.session_state.lp_outcome:
+            # Razón con callback
+            st.text_area("Reason:", key="lp_reason", height=80, 
+                         placeholder="Type failure reason...", on_change=recalc_note)
+            note_height = 250
+        else:
+            note_height = 150
+
+        # CUADRO DE NOTA FINAL EDITABLE
+        st.text_area("Final Note", key="final_note_content", height=note_height, label_visibility="collapsed")
+
+        # BOTONES
+        b_save, b_reset = st.columns([2, 1])
+        
+        # 1. COPIAR (Lee directamente lo que hay en pantalla)
+        _inject_copy_button(st.session_state.final_note_content, f"lab_copy_{len(st.session_state.final_note_content)}")
+
+        st.write("") 
+
+        # 2. GUARDAR
+        with b_save:
+            parsed_check = parse_crm_text(st.session_state.lp_text)
+            name = parsed_check.get('raw_name_guess', 'unknown')
+            cid = parsed_check.get('cordoba_id', 'unknown')
+            clean_id_num = ''.join(filter(str.isdigit, cid))
+            
+            # Recalculamos afiliado para el payload
+            affiliates_list = sorted(note_service.fetch_affiliates_list(conn))
+            raw_aff = parsed_check.get('marketing_company', '')
+            sug_aff = match_affiliate(raw_aff, affiliates_list)
+            final_aff = sug_aff if sug_aff else (raw_aff if raw_aff else "Unknown")
+            
+            save_ready = bool(name != 'unknown' and cid != 'unknown' and st.session_state.final_note_content)
+            
+            if st.button("💾 Save Log", type="primary", use_container_width=True, disabled=not save_ready):
+                if _is_duplicate_submission(clean_id_num):
+                    st.warning(f"⚠️ Duplicate for ID {clean_id_num}")
                 else:
-                    st.session_state.test_aff = None
-                    if mkt_text:
-                        st.warning(f"⚠️ No se encontró '{mkt_text}' en la lista oficial.")
-            else:
-                st.error("Pega algo de texto primero.")
+                    payload = {
+                        "user_id": st.session_state.get("user_id", 1),
+                        "username": st.session_state.get("username", "Lab_User"),
+                        "customer": name,
+                        "cordoba_id": clean_id_num,
+                        "result": st.session_state.lp_outcome.replace("❌ ", "").replace("✅ ", ""),
+                        "affiliate": final_aff,
+                        "info_until": st.session_state.get("lp_stage", "Completed"),
+                        "client_language": parsed_check.get('language', 'Unknown'),
+                        "comments": st.session_state.get("lp_reason", ""),
+                        "full_note_content": st.session_state.final_note_content
+                    }
+                    render_confirm_modal(conn, payload)
 
-    with col2:
-        st.subheader("2. Destino (Tu App)")
-        st.caption("Así se verían los campos llenos automáticamente:")
-        
-        with st.container(border=True):
-            st.text_input("Cx Name", key="test_name")
-            st.text_input("Cordoba ID", key="test_id")
-            
-            # Selectbox para probar si selecciona el correcto
-            st.selectbox(
-                "Affiliate (Selectbox)", 
-                options=mock_affiliates_list, 
-                key="test_aff",
-                index=None,
-                placeholder="Seleccione..."
-            )
-            
-        st.info("👆 Si los campos de arriba tienen datos, ¡funciona!")
+        # 3. RESET
+        with b_reset:
+            st.button("🔄 Reset", use_container_width=True, on_click=limpiar_lab)
 
 if __name__ == "__main__":
     show()
