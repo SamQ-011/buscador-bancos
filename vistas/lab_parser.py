@@ -81,7 +81,7 @@ def parse_crm_text(raw_text):
     if lines:
         raw_line = lines[0]
         clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
-        data['raw_name_guess'] = clean_name.strip().lower()
+        data['raw_name_guess'] = clean_name.strip().title()
 
     match_aff_mkt = re.search(r"Affiliate Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
     match_mkt = re.search(r"Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
@@ -226,7 +226,16 @@ def show():
             st.caption("Call Details:")
             c1, c2 = st.columns([1.5, 1])
             with c1:
-                st.selectbox("Progress", ["All info provided", "Banking Info", "Legal Script", "Creditors", "Intro"], 
+                st.selectbox("Progress", [
+                    "All info provided", "No info provided", "the text message of the VCF", 
+                    "the contact info verification", "the banking info verification", 
+                    "the enrollment plan verification", "the Yes/No verification questions", 
+                    "the creditors verification", "the right of offset",
+                    "1st agreement (settlement)", "2nd agreement (credit affected)", 
+                    "3rd agreement (not gov program)", "4th agreement (lawsuit)", 
+                    "5th agreement (not loan)", "recent statements request",
+                    "harassing calls info", "additional legal services info"
+                ], 
                              key="lp_stage", label_visibility="collapsed", on_change=recalc_note)
             with c2:
                 st.radio("Return?", ["Yes", "No"], horizontal=True, key="lp_return", on_change=recalc_note)

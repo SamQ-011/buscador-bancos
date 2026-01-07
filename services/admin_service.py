@@ -19,12 +19,13 @@ def run_transaction(conn, query_str: str, params: dict = None):
 # --- Dashboard & KPIs ---
 
 def fetch_global_kpis(conn):
+    # ... (tú código existente de KPIs) ...
+    # (Déjalo tal cual está)
     if not conn: return 0, pd.DataFrame()
     try:
         df_count = conn.query('SELECT COUNT(*) as total FROM "Creditors"', ttl=0)
         total_bancos = df_count.iloc[0]['total'] if not df_count.empty else 0
         
-        # Logs de las últimas 48h
         yesterday_utc = (datetime.utcnow() - timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
         logs_query = 'SELECT * FROM "Logs" WHERE created_at >= :yesterday AND agent != \'test\''
         df_logs = conn.query(logs_query, params={"yesterday": yesterday_utc}, ttl=0)
@@ -33,7 +34,39 @@ def fetch_global_kpis(conn):
     except Exception as e:
         return 0, pd.DataFrame()
 
-# --- Exportación de Datos ---
+def fetch_live_feed(conn, limit=15):
+    """Obtiene los registros más recientes con Nombres Reales y Cordoba ID."""
+    if not conn: return pd.DataFrame()
+    
+    # Hacemos JOIN para obtener el nombre real del agente (U.name)
+    query = """
+        SELECT 
+            L.created_at, 
+            COALESCE(U.name, L.agent) as agent_real_name, 
+            L.cordoba_id, 
+            L.result, 
+            L.affiliate 
+        FROM "Logs" L
+        LEFT JOIN "Users" U ON L.user_id = U.id
+        WHERE L.agent != 'test'
+        ORDER BY L.created_at DESC 
+        LIMIT :limit
+    """
+    try:
+        df = conn.query(query, params={"limit": limit}, ttl=0)
+        
+        if not df.empty:
+            # Conversión de hora
+            df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
+            df['Time'] = df['created_at'].dt.tz_convert('US/Eastern').dt.strftime('%I:%M %p')
+            
+            # Devolvemos las columnas exactas que pediste
+            return df[['Time', 'agent_real_name', 'cordoba_id', 'result', 'affiliate']]
+            
+    except Exception as e:
+        print(f"Live Feed Error: {e}")
+        
+    return pd.DataFrame()
 
 def fetch_agent_list(conn):
     try:

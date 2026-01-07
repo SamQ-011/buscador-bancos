@@ -1,6 +1,9 @@
 import time
+import re
 import streamlit as st
 import streamlit.components.v1 as components
+from datetime import datetime
+import pytz
 
 # --- IMPORTACIONES ---
 try:
@@ -9,9 +12,10 @@ except ImportError:
     from conexion import get_db_connection
 
 import services.notes_service as note_service
-from config.templates import REASON_TEMPLATES
 
-# --- Utils UI ---
+# ==============================================================================
+# 1. UTILS & HELPERS
+# ==============================================================================
 
 def _is_duplicate_submission(record_id: str, cooldown: int = 60) -> bool:
     now = time.time()
@@ -26,12 +30,12 @@ def _register_successful_save(record_id: str):
     st.session_state.last_save_id = record_id
 
 def _inject_copy_button(text_content: str, unique_key: str):
+    """
+    Botón robusto para copiar (Versión Lab Parser).
+    Funciona en HTTP y redes locales gracias al fallback de textarea.
+    """
     if not text_content: return
-    safe_text = (text_content.replace("\\", "\\\\")
-                             .replace("`", "\\`")
-                             .replace("$", "\\$")
-                             .replace("{", "\\{")
-                             .replace("}", "\\}"))
+    safe_text = (text_content.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
     
     html = f"""
     <script>
@@ -41,321 +45,292 @@ def _inject_copy_button(text_content: str, unique_key: str):
         const updateBtn = () => {{
             btn.innerHTML = '✅ Copied!';
             btn.style.backgroundColor = '#d1e7dd';
+            btn.style.color = '#0f5132';
+            btn.style.borderColor = '#badbcc';
             setTimeout(() => {{ 
-                btn.innerHTML = '📋 Copiar Nota'; 
+                btn.innerHTML = '📋 Copy Note'; 
                 btn.style.backgroundColor = '#f0f2f6'; 
+                btn.style.color = '#31333F'; 
+                btn.style.borderColor = '#d6d6d8';
             }}, 2000);
         }};
-        if (navigator.clipboard && navigator.clipboard.writeText) {{
-            navigator.clipboard.writeText(text).then(updateBtn);
-        }} else {{
-            const textArea = document.createElement("textarea");
-            textArea.value = text;
-            document.body.appendChild(textArea);
-            textArea.select();
+        
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {{
             document.execCommand('copy');
-            document.body.removeChild(textArea);
             updateBtn();
+        }} catch (err) {{
+            console.error('Fallback copy failed', err);
         }}
+        document.body.removeChild(textArea);
     }}
     </script>
     <button id="btn_{unique_key}" onclick="copyToClipboard_{unique_key}()" style="
         width: 100%; background-color: #f0f2f6; color: #31333F; border: 1px solid #d6d6d8; 
-        padding: 0.6rem; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; margin-top: 8px;">
-        📋 Copiar Nota
+        padding: 0.6rem; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; margin-top: 0px;">
+        📋 Copy Note
     </button>
     """
-    components.html(html, height=60)
+    components.html(html, height=50)
 
-# --- Callbacks de Limpieza (CORREGIDOS) ---
+# ==============================================================================
+# 2. LOGIC (Parser & Recalculator del Lab)
+# ==============================================================================
 
-def limpiar_form_completed():
-    # Para selectbox con index=None, debemos resetear a None, no a "" string vacio
-    keys_text = ["c_name", "c_id", "nota_c_texto", "area_c_edit"]
-    for k in keys_text:
-        if k in st.session_state: st.session_state[k] = ""
+def parse_crm_text(raw_text):
+    data = {}
+    match_id = re.search(r"(CORDOBA-\d+)", raw_text)
+    if match_id: data['cordoba_id'] = match_id.group(1)
+
+    lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+    if lines:
+        raw_line = lines[0]
+        clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
+        data['raw_name_guess'] = clean_name.strip().lower()
+
+    match_aff_mkt = re.search(r"Affiliate Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
+    match_mkt = re.search(r"Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
+    if match_aff_mkt and len(match_aff_mkt.group(1).strip()) > 1:
+        data['marketing_company'] = match_aff_mkt.group(1).strip()
+    elif match_mkt and len(match_mkt.group(1).strip()) > 1:
+        data['marketing_company'] = match_mkt.group(1).strip()
     
-    # Reseteo específico para Selectbox
-    if "c_aff" in st.session_state: st.session_state["c_aff"] = None
+    match_lang = re.search(r"Language:\s*(\w+)", raw_text, re.IGNORECASE)
+    if match_lang: data['language'] = match_lang.group(1)
+    return data
 
-def limpiar_form_not_completed():
-    keys_text = ["nc_name", "nc_id", "nc_reason", "nota_nc_texto", "area_nc_edit"]
-    for k in keys_text:
-        if k in st.session_state: st.session_state[k] = ""
+def match_affiliate(parsed_affiliate, db_options):
+    if not parsed_affiliate: return None
+    parsed_clean = parsed_affiliate.lower().strip()
+    for op in db_options:
+        if op.lower().strip() == parsed_clean: return op
+    for op in db_options:
+        if parsed_clean in op.lower(): return op
+    return None
+
+# --- RECALCULAR NOTA (Lógica Reactiva) ---
+def recalc_note():
+    """Genera el texto de la nota basado en los inputs actuales."""
+    # 1. Parsear datos
+    raw_text = st.session_state.get("lp_text", "")
+    parsed = parse_crm_text(raw_text) if raw_text else {}
     
-    # Reseteo específico para Selectbox
-    if "nc_aff" in st.session_state: st.session_state["nc_aff"] = None
+    # 2. Obtener valores de forma SEGURA
+    outcome = st.session_state.get("lp_outcome", "❌ Not Completed")
+    reason = st.session_state.get("lp_reason", "")
+    
+    # 3. Afiliado (Auto-detect)
+    try:
+        conn = get_db_connection()
+        affiliates_list = sorted(note_service.fetch_affiliates_list(conn))
+    except:
+        affiliates_list = []
 
-# --- Modales ---
+    raw_aff = parsed.get('marketing_company', '')
+    suggested_aff = match_affiliate(raw_aff, affiliates_list)
+    final_aff = suggested_aff if suggested_aff else (raw_aff if raw_aff else "Unknown Affiliate")
+    
+    # Datos básicos
+    name = parsed.get('raw_name_guess', 'unknown')
+    cid = parsed.get('cordoba_id', 'unknown')
+
+    # 4. Construir String
+    if "Not Completed" in outcome:
+        stage = st.session_state.get("lp_stage", "All info provided")
+        ret = st.session_state.get("lp_return", "No")
+        trans = st.session_state.get("lp_trans", "Unsuccessful")
+        
+        stat_title = "Returned" if ret == "Yes" else "Not Returned"
+        final_note = f"❌ WC Not Completed – {stat_title}\nCX: {name} || {cid}\n\n• Reason: {reason}\n\n• Call Progress: {stage}\n• Transfer Status: {trans}\nAffiliate: {final_aff}"
+    else:
+        final_note = f"✅ WC Completed\nCX: {name} || {cid}\nAffiliate: {final_aff}"
+
+    # 5. ACTUALIZAR EL CUADRO DE TEXTO
+    st.session_state.final_note_content = final_note
+
+def limpiar_lab():
+    st.session_state.lp_text = ""
+    st.session_state.lp_reason = ""
+    st.session_state.final_note_content = ""
+
+# ==============================================================================
+# 3. MODAL DE CONFIRMACIÓN
+# ==============================================================================
 
 @st.dialog("🛡️ Confirm Submission")
 def render_confirm_modal(conn, payload: dict):
     st.write("Verifica los detalles antes de guardar.")
     c1, c2 = st.columns(2)
     with c1:
-        st.caption("Cordoba ID")
-        st.info(payload['cordoba_id'])
-        st.caption("Customer Name")
-        st.info(payload['customer'])
+        st.caption("Customer")
+        st.info(f"{payload['customer']}\n{payload['cordoba_id']}")
     with c2:
-        st.caption("Result")
+        st.caption("Outcome")
         if "Completed" in payload['result'] and "Not" not in payload['result']:
             st.success(f"🏆 {payload['result']}")
         else:
             st.error(f"❌ {payload['result']}")
-        st.caption("Agent")
-        st.text(payload['username'])
+        st.caption("Affiliate")
+        st.text(payload['affiliate'])
+
+    if payload['comments']:
+        st.caption("Reason")
+        st.warning(payload['comments'])
+        
+    with st.expander("View Full Note Content"):
+        st.code(payload.get('full_note_content', 'No content'))
 
     st.divider()
     col_cancel, col_ok = st.columns([1, 1])
     if col_cancel.button("Cancel", use_container_width=True):
         st.rerun()
     if col_ok.button("✅ Confirm & Save", type="primary", use_container_width=True):
-        if note_service.commit_log(conn, payload):
-            _register_successful_save(payload['cordoba_id'])
-            if "Completed" in payload['result'] and "Not" not in payload['result']:
+        try:
+            if note_service.commit_log(conn, payload):
+                _register_successful_save(payload['cordoba_id'])
                 st.balloons()
-            else:
-                st.toast("Record saved successfully", icon="💾")
-            time.sleep(1.0)
-            st.rerun()
+                st.toast("Saved successfully!", icon="💾")
+                time.sleep(1.0)
+                st.rerun()
+        except Exception as e:
+            st.error(f"Error saving: {e}")
 
-# --- Vista Principal ---
+# ==============================================================================
+# 4. VISTA PRINCIPAL
+# ==============================================================================
 
 def show():
     st.title("📝 Notes Generator")
     conn = get_db_connection()
+    
+    # --- INICIALIZACIÓN DE ESTADO ---
+    # Variables del Parser (Smart Generator)
+    if "final_note_content" not in st.session_state: st.session_state.final_note_content = ""
+    if "lp_text" not in st.session_state: st.session_state.lp_text = ""
+    if "lp_reason" not in st.session_state: st.session_state.lp_reason = ""
+    if "lp_outcome" not in st.session_state: st.session_state.lp_outcome = "❌ Not Completed"
+    
+    # Variables de Third Party
+    if "nota_tp_texto" not in st.session_state: st.session_state.nota_tp_texto = ""
 
-    # Inicialización de Estado (CORREGIDO PARA SELECTBOX VACÍO)
-    keys_defaults = {
-        "nota_c_texto": "", "nota_nc_texto": "", "nota_tp_texto": "", 
-        "nc_reason": "", "area_c_edit": "", "area_nc_edit": "",
-        "c_name": "", "c_id": "", 
-        "nc_name": "", "nc_id": ""
-    }
-    # Inicializamos textos en blanco
-    for k, default in keys_defaults.items():
-        if k not in st.session_state: st.session_state[k] = default
-    
-    # Inicializamos selectboxes en None (para que arranquen vacíos)
-    if "c_aff" not in st.session_state: st.session_state["c_aff"] = None
-    if "nc_aff" not in st.session_state: st.session_state["nc_aff"] = None
-    
+    # Datos del Usuario Logueado
     user_id = st.session_state.get("user_id", None)
     username = st.session_state.get("username", "Unknown")
 
-    # Carga de lista ordenada
-    raw_affiliates = note_service.fetch_affiliates_list(conn)
-    if not raw_affiliates:
-        affiliates_list = ["Error loading list", "Patriot", "Cordoba Legal"]
-    else:
-        affiliates_list = sorted(raw_affiliates)
-
-    t_comp, t_not_comp, t_legal = st.tabs(["✅ WC Completed", "❌ WC Not Completed", "👥 Third Party"])
+    # --- PESTAÑAS ---
+    t_gen, t_legal = st.tabs(["✨ Smart Generator", "👥 Third Party"])
 
     # ---------------------------------------------------------
-    # 1. TAB: WC COMPLETED
+    # TAB 1: SMART GENERATOR
     # ---------------------------------------------------------
-    with t_comp:
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            head_col, btn_col = st.columns([3, 1])
-            with head_col: st.markdown("##### 🟢 Sale Data")
-            with btn_col: st.button("🔄 Reset", key="reset_c_top", on_click=limpiar_form_completed, use_container_width=True)
+    with t_gen:
+        col_left, col_right = st.columns([1, 1.2])
 
-            row_a1, row_a2 = st.columns(2)
-            c_name = row_a1.text_input("Cx Name", key="c_name").strip()
-            c_id = row_a2.text_input("Cordoba ID", key="c_id", max_chars=10).strip()
+        # --- IZQUIERDA: INPUT Y CONFIGURACIÓN ---
+        with col_left:
+            st.text_area("Paste", height=150, key="lp_text", 
+                         label_visibility="collapsed", 
+                         placeholder="Paste Forth Profile here...",
+                         on_change=recalc_note)
             
-            row_b1, row_b2 = st.columns(2)
-            # CAMBIO: Agregado index=None y placeholder
-            c_aff = row_b1.selectbox(
-                "Affiliate", 
-                options=affiliates_list, 
-                key="c_aff", 
-                index=None, 
-                placeholder="Select affiliate..."
-            )
-            c_lang = row_b2.selectbox("Language", ["English", "Spanish"], key="c_lang")
-            
-            st.markdown("---")
-            btn_prev, btn_save = st.columns(2)
-            
-            with btn_prev:
-                if st.button("👀 Preview", use_container_width=True, key="vis_comp"):
-                    # Validación extra para que no falle si es None
-                    if c_name and c_id and c_aff:
-                        clean_id = ''.join(filter(str.isdigit, c_id))
-                        txt = f"✅ WC Completed\nCX: {c_name} || CORDOBA-{clean_id}\nAffiliate: {c_aff}"
-                        st.session_state.nota_c_texto = txt
-                        st.session_state.area_c_edit = txt 
-                        st.rerun() 
-                    else: st.toast("Missing Name, ID or Affiliate", icon="⚠️")
-
-            with btn_save:
-                ready = bool(c_name and c_id and c_aff and st.session_state.nota_c_texto)
-                if st.button("💾 Save Log", type="primary", use_container_width=True, key="save_comp", disabled=not ready):
-                    clean_id = ''.join(filter(str.isdigit, c_id))
-                    
-                    if len(clean_id) != 10:
-                        st.error(f"❌ Error: ID must have 10 digits. (Actual: {len(clean_id)})")
-                    elif _is_duplicate_submission(clean_id):
-                        st.warning(f"⚠️ Duplicate detected for ID {clean_id}.")
-                    else:
-                        payload = {
-                            "user_id": user_id, "username": username,
-                            "customer": c_name, "cordoba_id": clean_id, 
-                            "result": "Completed", "affiliate": c_aff, 
-                            "info_until": "All info provided", "client_language": c_lang, "comments": "" 
-                        }
-                        render_confirm_modal(conn, payload)
-
-        with c2:
-            st.markdown("##### 📋 Final Note")
-            st.text_area("Edit & Copy:", height=200, key="area_c_edit", 
-                         on_change=lambda: st.session_state.update(nota_c_texto=st.session_state.area_c_edit))
-            if st.session_state.nota_c_texto:
-                _inject_copy_button(st.session_state.nota_c_texto, "copy_comp")
-
-    # ---------------------------------------------------------
-    # 2. TAB: WC NOT COMPLETED
-    # ---------------------------------------------------------
-    with t_not_comp:
-        # Mantenemos la división principal: Izquierda (Inputs) vs Derecha (Nota Final)
-        nc_left, nc_right = st.columns([2, 1])
-        
-        with nc_left:
-            # Cabecera y Botón Reset alineados
-            head_col_nc, btn_col_nc = st.columns([4, 1])
-            with head_col_nc: st.markdown("##### 🔴 Failure Data")
-            with btn_col_nc: st.button("🔄 Reset", key="reset_nc_top", on_click=limpiar_form_not_completed, use_container_width=True)
-
-            # --- COMPACTACIÓN 1: Todo en UNA fila (Nombre, ID, Afiliado, Idioma) ---
-            # Usamos ratios [2, 1, 2, 1] para dar espacio a lo que tiene texto largo
-            col_name, col_id, col_aff, col_lang = st.columns([2, 1, 2, 1])
-            
-            with col_name:
-                nc_name = st.text_input("Cx Name", key="nc_name").strip()
-            with col_id:
-                nc_id = st.text_input("Cordoba ID", key="nc_id", max_chars=10).strip()
-            with col_aff:
-                # Tu código de afiliado intacto
-                nc_aff = st.selectbox(
-                    "Affiliate", 
-                    options=affiliates_list, 
-                    key="nc_aff", 
-                    index=None, 
-                    placeholder="Select..."
-                )
-            with col_lang:
-                nc_lang = st.selectbox("Language", ["English", "Spanish"], key="nc_lang")
-
-            st.write("") # Pequeño espacio
-
-            # --- COMPACTACIÓN 2: Configuración de llamada en UNA fila ---
-            # Progress (Mitad) | Transfer (Cuarto) | Return (Cuarto)
-            col_prog, col_trans, col_ret = st.columns([2, 1, 1])
-
-            with col_prog:
-                progress_opts = [
-                    "All info provided", "No info provided", "the text message of the VCF", 
-                    "the contact info verification", "the banking info verification", 
-                    "the enrollment plan verification", "the Yes/No verification questions", 
-                    "the creditors verification", "the right of offset",
-                    "1st agreement (settlement)", "2nd agreement (credit affected)", 
-                    "3rd agreement (not gov program)", "4th agreement (lawsuit)", 
-                    "5th agreement (not loan)", "recent statements request",
-                    "harassing calls info", "additional legal services info"
-                ]
-                script_stage = st.selectbox("Info Until / Progress:", progress_opts, key="nc_script")
-            
-            with col_trans:
-                transfer = st.radio("Transfer Status:", ["Successful", "Unsuccessful"], horizontal=True, key="nc_trans")
-            
-            with col_ret:
-                return_call = st.radio("Return Call?", ["Yes", "No"], horizontal=True, key="nc_ret")
-
             st.divider()
 
-            # --- Generador de plantillas (Colapsado para ahorrar espacio vertical) ---
-            with st.expander("🛠️ Reason Templates Generator", expanded=False):
-                with st.container(border=True):
-                    cat_col, reason_col = st.columns([1, 2])
-                    with cat_col:
-                        cat_sel = st.selectbox("Category:", list(REASON_TEMPLATES.keys()), label_visibility="collapsed")
-                    with reason_col:
-                        templates = REASON_TEMPLATES[cat_sel]
-                        labels = [t["label"] for t in templates]
-                        lbl_sel = st.selectbox("Reason:", labels, label_visibility="collapsed")
-                    
-                    tmpl_data = next(t for t in templates if t["label"] == lbl_sel)
-                    
-                    if tmpl_data["inputs"]:
-                        in_cols = st.columns(len(tmpl_data["inputs"]) + 1)
-                        usr_inputs = []
-                        for i, label in enumerate(tmpl_data["inputs"]):
-                            with in_cols[i]:
-                                val = st.text_input(label, key=f"in_{lbl_sel}_{i}")
-                                usr_inputs.append(val)
-                        with in_cols[-1]:
-                            st.write(""); st.write("")
-                            if st.button("➕", use_container_width=True, help="Add to reason"): # Botón compacto con ícono
-                                if all(usr_inputs):
-                                    new_txt = tmpl_data["template"].format(*usr_inputs)
-                                    st.session_state.nc_reason += ("\n" + new_txt) if st.session_state.nc_reason else new_txt
-                                    st.rerun()
-                                else: st.toast("Missing inputs", icon="⚠️")
-                    else:
-                        if st.button(f"➕ Add '{lbl_sel}'"):
-                            new_txt = tmpl_data["template"]
-                            st.session_state.nc_reason += ("\n" + new_txt) if st.session_state.nc_reason else new_txt
-                            st.rerun()
-
-            # Razón Final
-            st.text_area("Final Reason (Manual Edit):", key="nc_reason", height=100)
+            st.radio("Outcome", ["❌ Not Completed", "✅ Completed"], 
+                     horizontal=True, 
+                     label_visibility="collapsed",
+                     key="lp_outcome",
+                     on_change=recalc_note)
             
-            # Botones de Acción
-            nb_prev, nb_save = st.columns(2)
-            with nb_prev:
-                if st.button("👀 Preview", use_container_width=True, key="vis_nc"):
-                    if nc_name and st.session_state.nc_reason and nc_aff:
-                        clean_id = ''.join(filter(str.isdigit, nc_id))
-                        stat_title = "Returned" if return_call == "Yes" else "Not Returned"
-                        tx_status = transfer
-                        txt = f"""❌ WC Not Completed – {stat_title}\nCX: {nc_name} || CORDOBA-{clean_id}\n\n• Reason: {st.session_state.nc_reason}\n\n• Call Progress: {script_stage}\n• Transfer Status: {tx_status}\nAffiliate: {nc_aff}"""
-                        st.session_state.nota_nc_texto = txt
-                        st.session_state.area_nc_edit = txt
-                        st.rerun()
-                    else: st.toast("Missing Name, Affiliate or Reason", icon="⚠️")
+            # Controles condicionales
+            if "Not Completed" in st.session_state.lp_outcome:
+                st.caption("Call Details:")
+                c1, c2 = st.columns([1.5, 1])
+                with c1:
+                    # Lista completa de opciones traída de notas.py original
+                    progress_opts = [
+                        "All info provided", "No info provided", "the text message of the VCF", 
+                        "the contact info verification", "the banking info verification", 
+                        "the enrollment plan verification", "the Yes/No verification questions", 
+                        "the creditors verification", "the right of offset",
+                        "1st agreement (settlement)", "2nd agreement (credit affected)", 
+                        "3rd agreement (not gov program)", "4th agreement (lawsuit)", 
+                        "5th agreement (not loan)", "recent statements request",
+                        "harassing calls info", "additional legal services info", "Intro"
+                    ]
+                    st.selectbox("Progress", progress_opts, 
+                                 key="lp_stage", label_visibility="collapsed", on_change=recalc_note)
+                with c2:
+                    st.radio("Return?", ["Yes", "No"], horizontal=True, key="lp_return", on_change=recalc_note)
+                    st.radio("Transfer?", ["Successful", "Unsuccessful"], horizontal=True, key="lp_trans", on_change=recalc_note)
+            else:
+                st.success(f"Sale Ready")
 
-            with nb_save:
-                ready_nc = bool(nc_name and nc_id and nc_aff and st.session_state.nc_reason and st.session_state.nota_nc_texto)
-                if st.button("💾 Save Log", type="primary", use_container_width=True, key="save_nc", disabled=not ready_nc):
-                    clean_id = ''.join(filter(str.isdigit, nc_id))
-                    if len(clean_id) != 10:
-                        st.error(f"❌ Error: ID must have 10 digits. (Actual: {len(clean_id)})")
-                    elif _is_duplicate_submission(clean_id):
-                        st.warning(f"⚠️ Duplicate detected for ID {clean_id}.")
+        # --- DERECHA: NOTA FINAL Y ACCIONES ---
+        with col_right:
+            if "Not Completed" in st.session_state.lp_outcome:
+                st.text_area("Reason:", key="lp_reason", height=80, 
+                             placeholder="Type failure reason...", on_change=recalc_note)
+                note_height = 250
+            else:
+                note_height = 150
+
+            # CUADRO DE TEXTO EDITABLE
+            st.text_area("Final Note", key="final_note_content", height=note_height, label_visibility="collapsed")
+
+            # BOTONES
+            b_save, b_reset = st.columns([2, 1])
+            
+            # 1. COPIAR
+            _inject_copy_button(st.session_state.final_note_content, f"gen_copy_{len(st.session_state.final_note_content)}")
+            
+            st.write("") 
+
+            # 2. GUARDAR
+            with b_save:
+                # Preparamos datos para validación
+                parsed_check = parse_crm_text(st.session_state.lp_text)
+                name = parsed_check.get('raw_name_guess', 'unknown')
+                cid = parsed_check.get('cordoba_id', 'unknown')
+                clean_id_num = ''.join(filter(str.isdigit, cid))
+                
+                # Afiliado final
+                affiliates_list = sorted(note_service.fetch_affiliates_list(conn))
+                raw_aff = parsed_check.get('marketing_company', '')
+                sug_aff = match_affiliate(raw_aff, affiliates_list)
+                final_aff = sug_aff if sug_aff else (raw_aff if raw_aff else "Unknown")
+                
+                save_ready = bool(name != 'unknown' and cid != 'unknown' and st.session_state.final_note_content)
+
+                if st.button("💾 Save Log", type="primary", use_container_width=True, disabled=not save_ready):
+                    if _is_duplicate_submission(clean_id_num):
+                        st.warning(f"⚠️ Duplicate for ID {clean_id_num}")
                     else:
-                        stat_title = "Returned" if return_call == "Yes" else "Not Returned"
                         payload = {
-                            "user_id": user_id, "username": username,
-                            "customer": nc_name, "cordoba_id": clean_id, 
-                            "result": f"Not Completed - {stat_title}", "affiliate": nc_aff, 
-                            "info_until": script_stage, "client_language": nc_lang, 
-                            "comments": st.session_state.nc_reason
+                            "user_id": user_id if user_id else 1, # Fallback
+                            "username": username,
+                            "customer": name,
+                            "cordoba_id": clean_id_num,
+                            "result": st.session_state.lp_outcome.replace("❌ ", "").replace("✅ ", ""),
+                            "affiliate": final_aff,
+                            "info_until": st.session_state.get("lp_stage", "Completed"),
+                            "client_language": parsed_check.get('language', 'Unknown'),
+                            "comments": st.session_state.get("lp_reason", ""),
+                            "full_note_content": st.session_state.final_note_content
                         }
                         render_confirm_modal(conn, payload)
 
-        with nc_right:
-            st.markdown("##### 📋 Final Note")
-            st.text_area("Edit & Copy:", height=450, key="area_nc_edit",
-                         on_change=lambda: st.session_state.update(nota_nc_texto=st.session_state.area_nc_edit))
-            if st.session_state.nota_nc_texto:
-                _inject_copy_button(st.session_state.nota_nc_texto, "copy_nc")
+            # 3. RESET
+            with b_reset:
+                st.button("🔄 Reset", use_container_width=True, on_click=limpiar_lab)
 
     # ---------------------------------------------------------
-    # 3. TAB: THIRD PARTY
+    # TAB 2: THIRD PARTY (Corregido)
     # ---------------------------------------------------------
     with t_legal:
         tp_l, tp_r = st.columns([1, 1])
@@ -380,17 +355,26 @@ def show():
                     joined = ", ".join(fmt_list)
                     pronoun = "these people" if len(attendees) > 1 else "this person"
                     txt = (f"✅ Third Party Authorization:\nThird party: {joined}\nThe customer authorizes {pronoun} to be present during the call.")
+                    
                     st.session_state.nota_tp_texto = txt
+                    st.session_state.area_tp_edit = txt  # Actualizamos la memoria del widget
                     st.rerun()
 
         with tp_r:
             st.subheader("⚖️ Legal Text")
-            st.text_area("Script:", value=st.session_state.nota_tp_texto, height=200, key="area_tp_edit",
+            # --- CORRECCIÓN AQUÍ: Quitamos 'value=...' ---
+            st.text_area("Script:", 
+                         height=200, 
+                         key="area_tp_edit", # El widget leerá su valor de esta key automáticamente
                          on_change=lambda: st.session_state.update(nota_tp_texto=st.session_state.area_tp_edit))
-            if st.session_state.nota_tp_texto:
-                _inject_copy_button(st.session_state.nota_tp_texto, "copy_tp")
+            
+            # Mostramos botón solo si hay texto generado
+            if st.session_state.area_tp_edit:
+                _inject_copy_button(st.session_state.area_tp_edit, "copy_tp")
 
-    # --- HISTORIAL ---
+    # ---------------------------------------------------------
+    # FOOTER: HISTORIAL RECIENTE
+    # ---------------------------------------------------------
     st.markdown("---")
     st.subheader(f"📜 Recent Activity ({username})")
     

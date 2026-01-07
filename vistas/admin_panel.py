@@ -19,7 +19,7 @@ import services.admin_service as admin_service
 # --- UI Components ---
 
 def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
-    """Tab 1: Visualización de métricas y exportación."""
+    """Tab 1: Visualización de métricas, Live Feed y exportación."""
     df_today = pd.DataFrame()
     today_et = datetime.now(pytz.timezone('US/Eastern')).date()
 
@@ -28,6 +28,7 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
         df_raw['date_et'] = df_raw['created_at'].dt.tz_convert('US/Eastern').dt.date
         df_today = df_raw[df_raw['date_et'] == today_et].copy()
 
+    # --- SECCIÓN 1: KPIs (TARJETAS) ---
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("🏦 Base de Datos", total_bancos, delta="Bancos Activos")
     
@@ -46,7 +47,34 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
 
     st.markdown("---")
 
-    # Gráficos
+    # --- SECCIÓN 2: LIVE FEED (NUEVO) ---
+    st.subheader("📡 Actividad en Tiempo Real")
+    
+    # Botón para refrescar manualmente sin recargar toda la página
+    if st.button("🔄 Refrescar Feed"):
+        st.rerun()
+
+    df_feed = admin_service.fetch_live_feed(conn)
+    
+    if not df_feed.empty:
+        st.dataframe(
+            df_feed,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Time": st.column_config.TextColumn("Hora (ET)", width="small"),
+                "agent_real_name": st.column_config.TextColumn("Agente", width="medium"),
+                "cordoba_id": st.column_config.TextColumn("Cordoba ID", width="medium"),
+                "result": st.column_config.TextColumn("Resultado Detallado", width="large"),
+                "affiliate": st.column_config.TextColumn("Afiliado", width="medium"),
+            }
+        )
+    else:
+        st.info("Esperando actividad...")
+
+    st.markdown("---")
+
+    # --- SECCIÓN 3: GRÁFICOS ---
     if not df_today.empty:
         g1, g2 = st.columns([2, 1])
         with g1:
@@ -56,7 +84,8 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
             chart = alt.Chart(chart_data).mark_bar(cornerRadius=4).encode(
                 x=alt.X('Notas', title='Cantidad de Notas'),
                 y=alt.Y('Agente', sort='-x', title=None),
-                color=alt.value("#3b82f6")
+                color=alt.value("#3b82f6"),
+                tooltip=['Agente', 'Notas']
             ).properties(height=320)
             st.altair_chart(chart, use_container_width=True)
             
@@ -67,12 +96,12 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
             )
             pie = alt.Chart(df_today).mark_arc(innerRadius=60).encode(
                 theta=alt.Theta("count()", stack=True),
-                color=alt.Color("Status_Simple", scale=alt.Scale(range=['#2ecc71', '#e74c3c']), legend=None),
+                color=alt.Color("Status_Simple", scale=alt.Scale(domain=['Completed', 'Not Completed'], range=['#2ecc71', '#e74c3c']), legend=None),
                 tooltip=["Status_Simple", "count()"]
             )
             st.altair_chart(pie, use_container_width=True)
 
-    # MODULO DE EXPORTACIÓN
+    # --- SECCIÓN 4: EXPORTACIÓN ---
     with st.expander("📥 Auditoría y Exportación", expanded=False):
         c_d1, c_d2, c_filt = st.columns([1, 1, 2])
         start_date = c_d1.date_input("Desde", value=datetime.now().replace(day=1))
@@ -83,18 +112,14 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
         
         if st.button("Generar Reporte Excel", type="primary"):
             try:
-                # Llamada al servicio para obtener datos
                 df_export = admin_service.fetch_logs_for_export(conn, start_date, end_date, target_agent)
-                
                 if not df_export.empty:
                     user_map = admin_service.fetch_user_map(conn)
                     output = io.BytesIO()
-                    
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        # Resumen Centralizador
+                        # (Tu lógica de exportación existente se mantiene igual)
                         summary_data = []
                         agents = sorted(df_export['agent'].unique(), key=lambda x: x.lower())
-                        
                         for idx, ag in enumerate(agents):
                             ag_data = df_export[df_export['agent'] == ag]
                             total = len(ag_data)
@@ -102,15 +127,12 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                                              ~ag_data['result'].str.contains('Not', case=False, na=False)])
                             not_comp = total - comp
                             real_name = user_map.get(ag, ag)
-
                             summary_data.append({
                                 "N°": idx + 1, "AGENT": real_name, "TOTAL WC COMPLETED": comp, 
                                 "TOTAL WC NOT COMPLETED": not_comp, "TOTAL CALLS": total
                             })
-                        
                         pd.DataFrame(summary_data).to_excel(writer, sheet_name='Centralizador', index=False)
                         
-                        # Hojas individuales
                         for ag in agents:
                             df_ag = df_export[df_export['agent'] == ag].copy()
                             df_final = pd.DataFrame({
@@ -130,7 +152,7 @@ def _render_dashboard(conn, df_raw: pd.DataFrame, total_bancos: int):
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
-                    st.warning("No se encontraron datos para los filtros seleccionados.")
+                    st.warning("No se encontraron datos.")
             except Exception as e:
                 st.error(f"Error generando reporte: {e}")
 
