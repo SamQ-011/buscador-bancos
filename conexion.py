@@ -5,7 +5,7 @@ import streamlit as st
 def get_db_connection():
     """
     Función centralizada para conectar a la base de datos.
-    Soporta Docker (Variables de entorno) y Local (secrets.toml).
+    Soporta Docker (Variables de entorno).
     """
     try:
         # 1. Intenta leer la variable de entorno desde Docker
