@@ -154,7 +154,7 @@ def _render_log_editor(conn):
                 st.rerun()
 
 def _render_bank_manager(conn):
-    """Tab 3: Gestión de Acreedores (Diseño Directo - Sin Selectbox)."""
+    """Tab 3: Gestión de Acreedores (Filtrado Robusto con Pandas)."""
     c_add, c_edit = st.columns([1, 2], gap="large")
     
     # --- COLUMNA IZQUIERDA: CREAR ---
@@ -173,67 +173,91 @@ def _render_bank_manager(conn):
                 else:
                     st.error("Nombre obligatorio.")
 
-    # --- COLUMNA DERECHA: EDITAR (Buscador Puro) ---
+    # --- COLUMNA DERECHA: EDITAR ---
     with c_edit:
         st.subheader("Editar Acreedor")
         
-        # 1. Input de Texto Puro (El usuario debe escribir)
+        # 1. Cargamos TODOS los datos primero (Estrategia más segura para ~2000 registros)
+        # Asumimos que search_creditors("") devuelve todo el listado.
+        try:
+            df_all = admin_service.search_creditors(conn, "")
+        except Exception as e:
+            st.error(f"Error cargando bancos: {e}")
+            df_all = pd.DataFrame()
+
+        # Input de búsqueda
         search_query = st.text_input(
             "Buscar por Abreviación o Nombre:", 
-            placeholder="Ej: FDSB o Macy's...",
-            help="Escribe la abreviación o el nombre y presiona Enter."
+            placeholder="Ej: TDRC o Bank...",
+            help="Escribe para filtrar la lista."
         ).strip()
         
         target_bank = None
         
-        if search_query:
-            # Buscamos en la base de datos solo lo que escribió
-            df_results = admin_service.search_creditors(conn, search_query)
-            
-            if not df_results.empty:
-                results = df_results.to_dict('records')
-                
-                # LOGICA INTELIGENTE:
-                if len(results) == 1:
-                    # CASO IDEAL: Solo 1 coincidencia -> Mostramos formulario directo
-                    target_bank = results[0]
-                    st.caption(f"✅ Coincidencia exacta: {target_bank['name']}")
-                    
-                else:
-                    # CASO AMBIGUO: Hay varios (ej. buscó "Bank")
-                    st.info(f"Se encontraron {len(results)} bancos. Selecciona el correcto:")
-                    
-                    # Usamos radio buttons en lugar de selectbox (menos clicks)
-                    options = {r['id']: f"{r['abreviation']} - {r['name']}" for r in results}
-                    selected_id = st.radio("Resultados:", list(options.keys()), format_func=lambda x: options[x])
-                    target_bank = next(r for r in results if r['id'] == selected_id)
+        # 2. Lógica de Filtrado Local (Pandas)
+        if not df_all.empty:
+            if search_query:
+                # Filtrado insensible a mayúsculas/minúsculas en AMBAS columnas
+                mask = (
+                    df_all['name'].str.contains(search_query, case=False, na=False) | 
+                    df_all['abreviation'].str.contains(search_query, case=False, na=False)
+                )
+                df_results = df_all[mask]
             else:
-                st.warning(f"🚫 No se encontró ningún banco con: '{search_query}'")
+                # Si no escribe nada, no mostramos nada para no saturar
+                df_results = pd.DataFrame()
 
-        # 2. Formulario de Edición (Solo aparece si ya tenemos un banco identificado)
+            # 3. Mostrar Resultados
+            if search_query and not df_results.empty:
+                results = df_results.to_dict('records')
+                count = len(results)
+                
+                # Caso A: Un solo resultado -> Lo seleccionamos automáticamente
+                if count == 1:
+                    target_bank = results[0]
+                    st.success(f"✅ Encontrado: {target_bank['name']}")
+                
+                # Caso B: Pocos resultados (2-10) -> Mostramos opciones tipo Radio
+                elif 1 < count <= 10:
+                    st.info(f"Se encontraron {count} coincidencias:")
+                    options = {r['id']: f"{r['abreviation']} - {r['name']}" for r in results}
+                    selected_id = st.radio("Selecciona:", list(options.keys()), format_func=lambda x: options[x])
+                    target_bank = next(r for r in results if r['id'] == selected_id)
+                
+                # Caso C: Demasiados resultados -> Pedimos refinar
+                else:
+                    st.warning(f"⚠️ Se encontraron {count} resultados. Por favor sé más específico.")
+                    # Opcional: Mostrar tabla previa
+                    st.dataframe(df_results[['abreviation', 'name']], height=150, hide_index=True)
+
+            elif search_query:
+                st.warning(f"🚫 No se encontró nada con: '{search_query}' en los {len(df_all)} registros activos.")
+
+        # 4. Formulario de Edición (Se activa si target_bank tiene datos)
         if target_bank:
             st.markdown("---")
             with st.container(border=True):
-                st.markdown(f"📝 Editando: **{target_bank['name']}**")
+                st.markdown(f"📝 Editando ID: `{target_bank['id']}`")
                 
                 with st.form("bank_edit_form"):
                     c_n, c_a = st.columns([2, 1])
                     n_val = c_n.text_input("Nombre", value=target_bank['name'])
                     a_val = c_a.text_input("Abrev.", value=target_bank['abreviation'])
                     
-                    col_actions = st.columns([1, 1.5])
+                    st.markdown("")
+                    col_actions = st.columns([1, 2])
                     
                     with col_actions[0]:
-                        if st.form_submit_button("🗑️ Eliminar Registro", use_container_width=True):
+                        if st.form_submit_button("🗑️ Eliminar", use_container_width=True):
                             if admin_service.delete_creditor(conn, target_bank['id']):
-                                st.warning("Banco eliminado.")
+                                st.warning("Registro eliminado.")
                                 time.sleep(0.5)
                                 st.rerun()
                     
                     with col_actions[1]:
                         if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
                             if admin_service.update_creditor(conn, target_bank['id'], n_val, a_val):
-                                st.success("Actualizado correctamente.")
+                                st.success("Cambios guardados.")
                                 time.sleep(0.5)
                                 st.rerun()
 
@@ -345,5 +369,6 @@ def show():
 
 if __name__ == "__main__":
     show()
+
 
 
