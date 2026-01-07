@@ -84,8 +84,22 @@ def create_creditor(conn, name, abbreviation):
     return run_transaction(conn, sql, {"name": name, "abbr": abbreviation})
 
 def search_creditors(conn, search_term):
-    return conn.query('SELECT * FROM "Creditors" WHERE name ILIKE :q LIMIT 15', params={"q": f"%{search_term}%"}, ttl=0)
-
+    """
+    Busca acreedores por Nombre O Abreviación.
+    Aumentamos el LIMIT para permitir que el frontend reciba todos los datos.
+    """
+    # 1. Buscamos en ambas columnas (Nombre OR Abreviación)
+    # 2. Subimos el LIMIT de 15 a 5000 para cubrir tus 2018 registros
+    sql = """
+        SELECT * FROM "Creditors" 
+        WHERE name ILIKE :q OR abreviation ILIKE :q 
+        ORDER BY name ASC 
+        LIMIT 5000
+    """
+    
+    # El % alrededor del término permite buscar coincidencias parciales
+    return conn.query(sql, params={"q": f"%{search_term}%"}, ttl=0)
+    
 def update_creditor(conn, creditor_id, name, abbreviation):
     sql = 'UPDATE "Creditors" SET name = :n, abreviation = :a WHERE id = :id'
     return run_transaction(conn, sql, {"n": name, "a": abbreviation, "id": creditor_id})
