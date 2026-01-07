@@ -103,16 +103,16 @@ def match_affiliate(parsed_affiliate, db_options):
         if parsed_clean in op.lower(): return op
     return None
 
-# --- RECALCULAR NOTA (CORREGIDO CON .GET) ---
+# --- RECALCULAR NOTA (Lógica Reactiva) ---
 def recalc_note():
-    """Genera el texto de la nota basado en los inputs actuales de forma segura."""
+    """Genera el texto de la nota basado en los inputs actuales."""
     # 1. Parsear datos de nuevo
     raw_text = st.session_state.get("lp_text", "")
     parsed = parse_crm_text(raw_text) if raw_text else {}
     
-    # 2. Obtener valores de forma SEGURA (usando .get para evitar errores si el widget no existe)
+    # 2. Obtener valores de forma SEGURA (.get para evitar crashes)
     outcome = st.session_state.get("lp_outcome", "❌ Not Completed")
-    reason = st.session_state.get("lp_reason", "") # <--- AQUÍ ESTABA EL ERROR
+    reason = st.session_state.get("lp_reason", "")
     
     # Afiliado
     conn = get_db_connection()
@@ -198,10 +198,9 @@ def show():
         st.error("DB Connection Failed")
         return
 
-    # Inicializar estado para el cuadro de texto final
+    # Inicializar estado
     if "final_note_content" not in st.session_state: st.session_state.final_note_content = ""
     if "lp_text" not in st.session_state: st.session_state.lp_text = ""
-    # Inicializamos outcome por defecto para evitar errores de lectura primera vez
     if "lp_outcome" not in st.session_state: st.session_state.lp_outcome = "❌ Not Completed"
 
     col_left, col_right = st.columns([1, 1.2])
@@ -257,7 +256,6 @@ def show():
 
         # 2. GUARDAR
         with b_save:
-            # Parseamos ID y Nombre solo para validación
             parsed_check = parse_crm_text(st.session_state.lp_text)
             name = parsed_check.get('raw_name_guess', 'unknown')
             cid = parsed_check.get('cordoba_id', 'unknown')
