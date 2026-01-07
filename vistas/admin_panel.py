@@ -154,15 +154,15 @@ def _render_log_editor(conn):
                 st.rerun()
 
 def _render_bank_manager(conn):
-    """Tab 3: Gestión de Acreedores (Mejorado)."""
+    """Tab 3: Gestión de Acreedores (Optimizado y Sin Redundancias)."""
     c_add, c_edit = st.columns([1, 2], gap="large")
     
-    # --- Columna Izquierda: Crear Nuevo ---
+    # --- COLUMNA IZQUIERDA: CREAR ---
     with c_add:
+        st.subheader("Nuevo Acreedor")
         with st.container(border=True):
-            st.markdown("🆕 **Nuevo Acreedor**")
-            name = st.text_input("Nombre Entidad")
-            abbrev = st.text_input("Abreviación (Alias)")
+            name = st.text_input("Nombre Entidad", key="new_name")
+            abbrev = st.text_input("Abreviación (Alias)", key="new_abbr")
             
             if st.button("Agregar Banco", use_container_width=True, type="primary"):
                 if name:
@@ -171,69 +171,74 @@ def _render_bank_manager(conn):
                         time.sleep(0.5)
                         st.rerun()
                 else:
-                    st.error("El nombre es obligatorio.")
-    
-    # --- Columna Derecha: Editar/Ver Lista Completa ---
+                    st.error("Nombre obligatorio.")
+
+    # --- COLUMNA DERECHA: EDITAR ---
     with c_edit:
-        st.markdown("✏️ **Editar Acreedor Existente**")
+        st.subheader("Editar Acreedor")
         
-        # Filtro de búsqueda (Opcional)
-        q = st.text_input("Filtro rápido:", placeholder="Escribe para buscar o deja vacío para ver todos...", label_visibility="collapsed")
-        
-        # Lógica: Si q está vacío, busca "" (trae todo). Si tiene texto, filtra.
-        search_term = q if q else ""
-        
+        # 1. Cargamos TODOS los bancos de una vez (es más rápido y limpio para UX)
+        # Asumimos que search_creditors("") devuelve todo.
         try:
-            df_banks = admin_service.search_creditors(conn, search_term)
+            df_banks = admin_service.search_creditors(conn, "")
         except Exception:
             df_banks = pd.DataFrame()
         
         if not df_banks.empty:
             banks = df_banks.to_dict('records')
             
-            # Crear diccionario para el Selectbox: ID -> Texto a mostrar
-            b_opts = {b['id']: f"{b['name']} ({b['abreviation']})" for b in banks}
+            # 2. EL TRUCO: Formateamos la etiqueta para buscar por ABREVIACIÓN
+            # Formato: "ABREVIACION - Nombre Completo"
+            # Esto permite escribir "MACYS" en el buscador y encontrarlo rápido.
+            b_opts = {
+                b['id']: f"{b['abreviation']} - {b['name']}" if b['abreviation'] else f"{b['name']}" 
+                for b in banks
+            }
             
-            # Selectbox siempre visible con los resultados
+            # 3. Solo el Selectbox (Eliminamos el filtro de texto redundante)
             sel_id = st.selectbox(
-                "Selecciona un banco:", 
+                "Selecciona un banco (Escribe para buscar por Alias o Nombre):", 
                 options=list(b_opts.keys()), 
-                format_func=lambda x: b_opts[x]
+                format_func=lambda x: b_opts[x],
+                help="Puedes escribir la abreviación (ej. FDSB) para encontrarlo rápido."
             )
             
             # Obtener datos del banco seleccionado
             target = next((b for b in banks if b['id'] == sel_id), None)
             
             if target:
-                st.divider()
+                st.markdown("---") # Separador visual sutil
+                
+                # 4. Formulario de edición directo
                 with st.container(border=True):
-                    st.caption(f"Editando ID: {sel_id}")
+                    c_id, c_info = st.columns([1, 4])
+                    c_id.caption(f"ID Sistema: {sel_id}")
+                    
                     with st.form("bank_edit_form"):
-                        c_n, c_a = st.columns(2)
-                        n_val = c_n.text_input("Nombre", value=target['name'])
-                        a_val = c_a.text_input("Abrev.", value=target['abreviation'])
+                        c_n, c_a = st.columns([2, 1])
+                        # Pre-cargamos los valores
+                        n_val = c_n.text_input("Nombre Entidad", value=target['name'])
+                        a_val = c_a.text_input("Abreviación", value=target['abreviation'])
                         
-                        st.markdown("") # Espacio
-                        c_del, c_upd = st.columns([1, 2])
+                        col_actions = st.columns([1, 1])
                         
-                        with c_del:
-                            if st.form_submit_button("🗑️ Eliminar", use_container_width=True):
+                        with col_actions[0]:
+                             # Botón de borrado con confirmación visual (rojo)
+                            if st.form_submit_button("🗑️ Eliminar Registro", use_container_width=True):
                                 if admin_service.delete_creditor(conn, sel_id):
-                                    st.warning("Eliminado correctamente.")
+                                    st.warning("Banco eliminado.")
                                     time.sleep(0.5)
                                     st.rerun()
-                                    
-                        with c_upd:
+                        
+                        with col_actions[1]:
+                            # Botón de guardado principal
                             if st.form_submit_button("💾 Guardar Cambios", type="primary", use_container_width=True):
                                 if admin_service.update_creditor(conn, sel_id, n_val, a_val):
-                                    st.success("Cambios guardados.")
+                                    st.success("Actualizado correctamente.")
                                     time.sleep(0.5)
                                     st.rerun()
         else:
-            if q:
-                st.info(f"No se encontraron bancos con: '{q}'")
-            else:
-                st.info("No hay bancos registrados en la base de datos.")
+            st.info("No hay bancos registrados en la base de datos.")
 
 def _render_updates_manager(conn):
     """Tab 4: Centro de Mensajes."""
@@ -343,3 +348,4 @@ def show():
 
 if __name__ == "__main__":
     show()
+
