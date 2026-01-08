@@ -19,8 +19,6 @@ def run_transaction(conn, query_str: str, params: dict = None):
 # --- Dashboard & KPIs ---
 
 def fetch_global_kpis(conn):
-    # ... (tú código existente de KPIs) ...
-    # (Déjalo tal cual está)
     if not conn: return 0, pd.DataFrame()
     try:
         df_count = conn.query('SELECT COUNT(*) as total FROM "Creditors"', ttl=0)
@@ -38,7 +36,6 @@ def fetch_live_feed(conn, limit=15):
     """Obtiene los registros más recientes con Nombres Reales y Cordoba ID."""
     if not conn: return pd.DataFrame()
     
-    # Hacemos JOIN para obtener el nombre real del agente (U.name)
     query = """
         SELECT 
             L.created_at, 
@@ -56,11 +53,8 @@ def fetch_live_feed(conn, limit=15):
         df = conn.query(query, params={"limit": limit}, ttl=0)
         
         if not df.empty:
-            # Conversión de hora
             df['created_at'] = pd.to_datetime(df['created_at'], utc=True)
             df['Time'] = df['created_at'].dt.tz_convert('US/Eastern').dt.strftime('%I:%M %p')
-            
-            # Devolvemos las columnas exactas que pediste
             return df[['Time', 'agent_real_name', 'cordoba_id', 'result', 'affiliate']]
             
     except Exception as e:
@@ -83,7 +77,6 @@ def fetch_user_map(conn):
         return {}
 
 def fetch_logs_for_export(conn, start_date, end_date, target_agent):
-    """Obtiene los datos crudos para el reporte de Excel."""
     base_query = """
         SELECT * FROM "Logs" 
         WHERE created_at >= :start AND created_at <= :end
@@ -117,20 +110,12 @@ def create_creditor(conn, name, abbreviation):
     return run_transaction(conn, sql, {"name": name, "abbr": abbreviation})
 
 def search_creditors(conn, search_term):
-    """
-    Busca acreedores por Nombre O Abreviación.
-    Aumentamos el LIMIT para permitir que el frontend reciba todos los datos.
-    """
-    # 1. Buscamos en ambas columnas (Nombre OR Abreviación)
-    # 2. Subimos el LIMIT de 15 a 5000 para cubrir tus 2018 registros
     sql = """
         SELECT * FROM "Creditors" 
         WHERE name ILIKE :q OR abreviation ILIKE :q 
         ORDER BY name ASC 
         LIMIT 5000
     """
-    
-    # El % alrededor del término permite buscar coincidencias parciales
     return conn.query(sql, params={"q": f"%{search_term}%"}, ttl=0)
     
 def update_creditor(conn, creditor_id, name, abbreviation):
@@ -139,6 +124,19 @@ def update_creditor(conn, creditor_id, name, abbreviation):
 
 def delete_creditor(conn, creditor_id):
     return run_transaction(conn, 'DELETE FROM "Creditors" WHERE id = :id', {"id": creditor_id})
+
+# --- NUEVO: Gestión de Reportes de Bancos (Search Misses) ---
+
+def fetch_search_misses(conn):
+    """Obtiene la lista de bancos no encontrados reportados por agentes."""
+    try:
+        return conn.query('SELECT * FROM "Search_Misses" ORDER BY created_at DESC', ttl=0)
+    except Exception:
+        return pd.DataFrame()
+
+def dismiss_search_miss(conn, report_id):
+    """Elimina un reporte de la lista de pendientes."""
+    return run_transaction(conn, 'DELETE FROM "Search_Misses" WHERE id = :id', {"id": report_id})
 
 # --- Gestión de Noticias (Updates) ---
 
@@ -155,6 +153,35 @@ def fetch_active_updates(conn):
 
 def archive_update(conn, update_id):
     return run_transaction(conn, 'UPDATE "Updates" SET active = FALSE WHERE id = :id', {"id": update_id})
+
+# --- NUEVO: Auditoría de Lectura de Noticias ---
+
+def fetch_update_reads(conn, update_id):
+    """Obtiene quiénes leyeron una noticia específica."""
+    try:
+        # Hacemos JOIN para mostrar Nombre Real en vez de username
+        sql = """
+            SELECT U.name, R.read_at
+            FROM "Updates_Reads" R
+            JOIN "Users" U ON R.username = U.username
+            WHERE R.update_id = :uid
+            ORDER BY R.read_at DESC
+        """
+        df = conn.query(sql, params={"uid": update_id}, ttl=0)
+        if not df.empty:
+             # Formatear fecha para que sea legible
+            df['read_at'] = pd.to_datetime(df['read_at']).dt.strftime('%b %d, %H:%M')
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_total_active_agents(conn):
+    """Cuenta total de agentes activos para calcular porcentaje de lectura."""
+    try:
+        df = conn.query("SELECT COUNT(*) as count FROM \"Users\" WHERE active = TRUE AND role != 'Admin'", ttl=300)
+        return df.iloc[0]['count']
+    except:
+        return 1
 
 # --- Gestión de Usuarios ---
 

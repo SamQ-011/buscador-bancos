@@ -1,97 +1,134 @@
 import pandas as pd
 import streamlit as st
 from datetime import datetime
-import services.updates_service as service # Importamos tu servicio
+import services.updates_service as service
 
-# Configuración Visual (Themes)
-CATEGORY_THEMES = {
-    'CRITICAL': {'border': '#DC2626', 'bg': '#DC2626', 'icon': '🚨'},
-    'WARNING':  {'border': '#D97706', 'bg': '#D97706', 'icon': '⚠️'},
-    'INFO':     {'border': '#2563EB', 'bg': '#2563EB', 'icon': 'ℹ️'}
+try:
+    from conexion import get_db_connection
+except ImportError:
+    from conexion import get_db_connection
+
+# Iconos para el título
+ICONS = {
+    'CRITICAL': '🚨',
+    'WARNING':  '⚠️',
+    'INFO':     'ℹ️',
+    'SUCCESS':  '🎉'
 }
 
-def _render_update_card(row: pd.Series):
-    """Genera HTML para una tarjeta individual."""
+def _render_expander_item(conn, row: pd.Series, is_read: bool, username: str):
+    """Renderiza la noticia usando SOLO componentes nativos de Streamlit."""
+    
+    # 1. Preparar Datos
+    uid = row['id']
     cat = str(row.get('category', 'Info')).strip().upper()
-    title = row.get('title', 'Aviso del Sistema')
+    title = row.get('title', 'Aviso')
     msg = row.get('message', '')
     raw_date = row.get('date', '')
 
     try:
         if isinstance(raw_date, str):
-            date_str = datetime.strptime(raw_date, '%Y-%m-%d').strftime('%b %d, %Y')
+            dt_obj = datetime.strptime(raw_date, '%Y-%m-%d')
         else:
-            date_str = raw_date.strftime('%b %d, %Y')
-    except (ValueError, AttributeError):
+            dt_obj = raw_date
+        date_str = dt_obj.strftime('%b %d')
+        # Es nuevo si tiene menos de 3 días
+        is_new = (datetime.now() - pd.to_datetime(dt_obj)).days < 3
+    except:
         date_str = str(raw_date)
+        is_new = False
 
-    theme = CATEGORY_THEMES.get(cat, CATEGORY_THEMES['INFO'])
+    icon = ICONS.get(cat, '📢')
 
-    st.markdown(f"""
-    <div style="
-        background-color: #FFFFFF; border-radius: 6px;
-        border-left: 4px solid {theme['border']};
-        box-shadow: 0 1px 3px 0 rgba(0,0,0,0.1);
-        padding: 1.25rem; margin-bottom: 1rem;
-        font-family: 'Segoe UI', sans-serif;
-    ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <span style="background-color: {theme['bg']}; color: white; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 700;">
-                {theme['icon']} {cat}
-            </span>
-            <span style="color: #6B7280; font-size: 0.85rem;">{date_str}</span>
-        </div>
-        <h3 style="margin: 0 0 0.5rem 0; color: #111827; font-size: 1.1rem; font-weight: 600;">{title}</h3>
-        <div style="color: #374151; font-size: 0.95rem; line-height: 1.5; white-space: pre-wrap;">{msg}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    # --- DISEÑO UNIFICADO (EXPANDERS) ---
+    
+    if not is_read:
+        # === MODO PENDIENTE ===
+        # Título visualmente distintivo
+        label = f"{icon} [{cat}] {title}  | 📅 {date_str}"
+        if is_new: label += " ✨ NUEVO"
+        
+        # Si es Crítico, lo abrimos por defecto para llamar la atención
+        start_open = True if cat == 'CRITICAL' else False
+        
+        with st.expander(label, expanded=start_open):
+            # Usamos markdown para el cuerpo
+            st.markdown(f"**{msg}**") 
+            st.caption(f"Categoría: {cat}")
+            st.write("---")
+            
+            # Botón para marcar como leído
+            c_spacer, c_btn = st.columns([3, 1])
+            with c_btn:
+                btn_type = "primary" if cat == "CRITICAL" else "secondary"
+                if st.button(f"Marcar como Leído", key=f"read_{uid}", type=btn_type, use_container_width=True):
+                    if service.mark_as_read(conn, uid, username):
+                        st.rerun()
+
+    else:
+        # === MODO LEÍDO ===
+        # Título limpio y discreto
+        label = f"✅ {date_str} | {title}"
+        
+        with st.expander(label, expanded=False):
+            st.info("Ya has leído este mensaje.")
+            st.markdown(msg)
 
 def show():
+    conn = get_db_connection()
+    username = st.session_state.get("username", "Invitado")
+
     # Header
-    c_head, c_act = st.columns([4, 1])
-    with c_head:
+    c1, c2 = st.columns([5, 1])
+    with c1:
         st.title("📢 Centro de Novedades")
-        st.caption("Comunicaciones oficiales y actualizaciones operativas.")
-    with c_act:
-        st.write("") 
-        if st.button("🔄 Refrescar", use_container_width=True):
+    with c2:
+        if st.button("🔄", help="Refrescar"):
             st.cache_data.clear()
             st.rerun()
 
-    st.divider()
-
-    # 1. Llamada al Servicio
-    df = service.fetch_updates()
-
+    # 1. Obtener Datos
+    df = service.fetch_updates(conn)
     if df.empty:
-        st.info("No hay anuncios activos en este momento.")
+        st.info("No hay anuncios activos.")
         return
 
-    # Filtros
-    c_search, c_filter = st.columns([3, 1])
-    with c_search:
-        search_query = st.text_input("Buscar...", placeholder="Palabras clave...", label_visibility="collapsed")
-    with c_filter:
-        cat_filter = st.selectbox("Tipo", ["Todos", "🔴 Critical", "🟡 Warning", "🔵 Info"], label_visibility="collapsed")
+    # 2. Cruzar con Leídos
+    read_ids = service.fetch_read_ids(conn, username)
+    df['is_read'] = df['id'].isin(read_ids)
 
-    # Lógica de Filtrado (en Vista porque es interacción UI)
-    if search_query:
-        mask = df['title'].str.contains(search_query, case=False, na=False) | \
-               df['message'].str.contains(search_query, case=False, na=False)
+    # 3. Filtros
+    c_search, c_filt = st.columns([3, 1])
+    search = c_search.text_input("Buscar", placeholder="Filtrar...", label_visibility="collapsed")
+    filtro = c_filt.selectbox("Ver", ["Todos", "Pendientes", "Leídos"], label_visibility="collapsed")
+
+    if search:
+        mask = df['title'].str.contains(search, case=False, na=False) | df['message'].str.contains(search, case=False, na=False)
         df = df[mask]
+    
+    if filtro == "Pendientes": df = df[df['is_read'] == False]
+    elif filtro == "Leídos": df = df[df['is_read'] == True]
 
-    if cat_filter != "Todos":
-        target_cat = cat_filter.split(" ")[1].strip()
-        df = df[df['category'].str.upper() == target_cat]
+    # 4. Ordenar: Pendientes Críticos -> Pendientes Nuevos -> Leídos
+    df = df.sort_values(by=['is_read', 'date'], ascending=[True, False])
 
     st.write("")
 
-    # Renderizado
-    if not df.empty:
-        for _, row in df.iterrows():
-            _render_update_card(row)
-    else:
-        st.warning("No se encontraron actualizaciones con esos criterios.")
+    # 5. Renderizar
+    pendientes = df[df['is_read'] == False]
+    leidos = df[df['is_read'] == True]
+
+    if not pendientes.empty:
+        st.caption("🔴 Pendientes")
+        for _, row in pendientes.iterrows():
+            _render_expander_item(conn, row, False, username)
+        st.write("")
+
+    if not leidos.empty:
+        if not pendientes.empty: st.markdown("---")
+        st.caption("📂 Historial Leído")
+        for _, row in leidos.iterrows():
+            _render_expander_item(conn, row, True, username)
 
 if __name__ == "__main__":
     show()

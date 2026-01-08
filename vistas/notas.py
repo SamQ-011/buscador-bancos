@@ -14,6 +14,23 @@ except ImportError:
 import services.notes_service as note_service
 
 # ==============================================================================
+# 0. CONSTANTES & CONFIGURACIÓN
+# ==============================================================================
+
+# Lista de motivos de fallo en transferencia (Solicitado por el usuario)
+TRANSFER_FAIL_REASONS = [
+    "Unsuccessful, number was not in service.",
+    "Unsuccessful, attempted to contact sales back with no success.",
+    "Unsuccessful, the SA was unavailable.",
+    "Unsuccessful, the call was concluded immediately after the verification outcome was completed.",
+    "Unsuccessful, the Cx disconnected the call before I could transfer the call back to Sales.",
+    "Unsuccessful, the Cx disconnected the call and requested for a call back later.",
+    "Unsuccessful, I tried to transfer the client to their representative by calling the company’s extension, but no one answered.",
+    "Unsuccessful, I tried to transfer the client to their representative by calling the company’s extension, but it goes straight to voicemail.",
+    "Unsuccesful, the client is busy and will be waiting for their representative’s call."
+]
+
+# ==============================================================================
 # 1. UTILS & HELPERS
 # ==============================================================================
 
@@ -32,7 +49,6 @@ def _register_successful_save(record_id: str):
 def _inject_copy_button(text_content: str, unique_key: str):
     """
     Botón robusto para copiar (Versión Lab Parser).
-    Funciona en HTTP y redes locales gracias al fallback de textarea.
     """
     if not text_content: return
     safe_text = (text_content.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
@@ -86,10 +102,8 @@ def _inject_copy_button(text_content: str, unique_key: str):
 def parse_crm_text(raw_text):
     data = {}
     
-    # --- 1. ID EXTRACTION (Prioridad para evitar Co-Applicant) ---
-    # Prioridad A: Buscar explícitamente "Customer ID"
+    # --- 1. ID EXTRACTION ---
     match_specific_id = re.search(r"Customer ID\s*(CORDOBA-\d+)", raw_text, re.IGNORECASE)
-    # Prioridad B: Buscar cualquier CORDOBA-XXXX (Fallback)
     match_any_id = re.search(r"(CORDOBA-\d+)", raw_text)
 
     if match_specific_id:
@@ -101,14 +115,11 @@ def parse_crm_text(raw_text):
     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
     if lines:
         raw_line = lines[0]
-        # Limpieza de "Purchaser..." y "Co-Applicant"
         clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
         clean_name = re.sub(r"Co-Applicant:.*", "", clean_name, flags=re.IGNORECASE)
         data['raw_name_guess'] = clean_name.strip().title()
 
-    # --- 3. AFFILIATE EXTRACTION (Jerarquía Actualizada) ---
-    # Orden estricto: Affiliate Mkt > Marketing > Assigned
-    # SE ELIMINÓ "Servicing Company" de la lista.
+    # --- 3. AFFILIATE EXTRACTION ---
     affiliate_patterns = [
         r"Affiliate Marketing Company\s*(.*)",
         r"Marketing Company\s*(.*)",
@@ -119,7 +130,7 @@ def parse_crm_text(raw_text):
         match = re.search(pattern, raw_text, re.IGNORECASE)
         if match and len(match.group(1).strip()) > 1:
             data['marketing_company'] = match.group(1).strip()
-            break # Si encontramos uno, dejamos de buscar
+            break 
     
     # --- 4. LANGUAGE ---
     match_lang = re.search(r"Language:\s*(\w+)", raw_text, re.IGNORECASE)
@@ -143,7 +154,7 @@ def recalc_note():
     raw_text = st.session_state.get("lp_text", "")
     parsed = parse_crm_text(raw_text) if raw_text else {}
     
-    # 2. Obtener valores de forma SEGURA
+    # 2. Obtener valores de inputs
     outcome = st.session_state.get("lp_outcome", "❌ Not Completed")
     reason = st.session_state.get("lp_reason", "")
     
@@ -166,10 +177,22 @@ def recalc_note():
     if "Not Completed" in outcome:
         stage = st.session_state.get("lp_stage", "All info provided")
         ret = st.session_state.get("lp_return", "No")
-        trans = st.session_state.get("lp_trans", "Unsuccessful")
         
+        # --- LÓGICA DE TRANSFERENCIA (NUEVA) ---
+        base_trans = st.session_state.get("lp_trans", "Unsuccessful")
+        
+        if base_trans == "Unsuccessful":
+            # Si es Unsuccessful, buscamos el motivo detallado en la sesión
+            # Si aún no existe en sesión (primera carga), usamos el primero de la lista
+            detailed_reason = st.session_state.get("lp_trans_reason", TRANSFER_FAIL_REASONS[0])
+            final_trans_status = detailed_reason
+        else:
+            final_trans_status = "Successful"
+
         stat_title = "Returned" if ret == "Yes" else "Not Returned"
-        final_note = f"❌ WC Not Completed – {stat_title}\nCX: {name} || {cid}\n\n• Reason: {reason}\n\n• Call Progress: {stage}\n• Transfer Status: {trans}\nAffiliate: {final_aff}"
+        
+        # Construcción final usando el motivo detallado
+        final_note = f"❌ WC Not Completed – {stat_title}\nCX: {name} || {cid}\n\n• Reason: {reason}\n\n• Call Progress: {stage}\n• Transfer Status: {final_trans_status}\nAffiliate: {final_aff}"
     else:
         final_note = f"✅ WC Completed\nCX: {name} || {cid}\nAffiliate: {final_aff}"
 
@@ -232,16 +255,15 @@ def show():
     conn = get_db_connection()
     
     # --- INICIALIZACIÓN DE ESTADO ---
-    # Variables del Parser (Smart Generator)
     if "final_note_content" not in st.session_state: st.session_state.final_note_content = ""
     if "lp_text" not in st.session_state: st.session_state.lp_text = ""
     if "lp_reason" not in st.session_state: st.session_state.lp_reason = ""
     if "lp_outcome" not in st.session_state: st.session_state.lp_outcome = "❌ Not Completed"
     
-    # Variables de Third Party
+    # Variables Third Party
     if "nota_tp_texto" not in st.session_state: st.session_state.nota_tp_texto = ""
 
-    # Datos del Usuario Logueado
+    # Datos Usuario
     user_id = st.session_state.get("user_id", None)
     username = st.session_state.get("username", "Unknown")
 
@@ -274,7 +296,6 @@ def show():
                 st.caption("Call Details:")
                 c1, c2 = st.columns([1.5, 1])
                 with c1:
-                    # Lista completa de opciones traída de notas.py original
                     progress_opts = [
                         "All info provided", "No info provided", "the text message of the VCF", 
                         "the contact info verification", "the banking info verification", 
@@ -289,15 +310,27 @@ def show():
                                  key="lp_stage", label_visibility="collapsed", on_change=recalc_note)
                 with c2:
                     st.radio("Return?", ["Yes", "No"], horizontal=True, key="lp_return", on_change=recalc_note)
+                    # Selector de Transferencia
                     st.radio("Transfer?", ["Successful", "Unsuccessful"], horizontal=True, key="lp_trans", on_change=recalc_note)
+                
+                # --- NUEVO: SELECTOR DE RAZONES DE FALLO ---
+                # Solo aparece si seleccionan "Unsuccessful"
+                if st.session_state.get("lp_trans") == "Unsuccessful":
+                    st.selectbox(
+                        "Reason for failed transfer:", 
+                        TRANSFER_FAIL_REASONS,
+                        key="lp_trans_reason",
+                        on_change=recalc_note,
+                        help="Select the specific reason why the transfer failed."
+                    )
             else:
                 st.success(f"Sale Ready")
 
         # --- DERECHA: NOTA FINAL Y ACCIONES ---
         with col_right:
             if "Not Completed" in st.session_state.lp_outcome:
-                st.text_area("Reason:", key="lp_reason", height=80, 
-                             placeholder="Type failure reason...", on_change=recalc_note)
+                st.text_area("Reason (Internal Comment):", key="lp_reason", height=80, 
+                             placeholder="Type generic failure reason...", on_change=recalc_note)
                 note_height = 250
             else:
                 note_height = 150
@@ -315,7 +348,7 @@ def show():
 
             # 2. GUARDAR
             with b_save:
-                # Preparamos datos para validación
+                # Preparamos datos
                 parsed_check = parse_crm_text(st.session_state.lp_text)
                 name = parsed_check.get('raw_name_guess', 'unknown')
                 cid = parsed_check.get('cordoba_id', 'unknown')
@@ -334,7 +367,7 @@ def show():
                         st.warning(f"⚠️ Duplicate for ID {clean_id_num}")
                     else:
                         payload = {
-                            "user_id": user_id if user_id else 1, # Fallback
+                            "user_id": user_id if user_id else 1,
                             "username": username,
                             "customer": name,
                             "cordoba_id": clean_id_num,
@@ -352,7 +385,7 @@ def show():
                 st.button("🔄 Reset", use_container_width=True, on_click=limpiar_lab)
 
     # ---------------------------------------------------------
-    # TAB 2: THIRD PARTY (Corregido)
+    # TAB 2: THIRD PARTY
     # ---------------------------------------------------------
     with t_legal:
         tp_l, tp_r = st.columns([1, 1])
@@ -379,18 +412,16 @@ def show():
                     txt = (f"✅ Third Party Authorization:\nThird party: {joined}\nThe customer authorizes {pronoun} to be present during the call.")
                     
                     st.session_state.nota_tp_texto = txt
-                    st.session_state.area_tp_edit = txt  # Actualizamos la memoria del widget
+                    st.session_state.area_tp_edit = txt 
                     st.rerun()
 
         with tp_r:
             st.subheader("⚖️ Legal Text")
-            # --- CORRECCIÓN AQUÍ: Quitamos 'value=...' ---
             st.text_area("Script:", 
                          height=200, 
-                         key="area_tp_edit", # El widget leerá su valor de esta key automáticamente
+                         key="area_tp_edit",
                          on_change=lambda: st.session_state.update(nota_tp_texto=st.session_state.area_tp_edit))
             
-            # Mostramos botón solo si hay texto generado
             if st.session_state.area_tp_edit:
                 _inject_copy_button(st.session_state.area_tp_edit, "copy_tp")
 

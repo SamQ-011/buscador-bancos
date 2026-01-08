@@ -7,8 +7,10 @@ try:
     import estilos 
     from conexion import get_db_connection
     import services.auth_service as auth_service
+    # NUEVO: Importamos el servicio de updates para la alarma
+    import services.updates_service as updates_service
     
-    # IMPORTAMOS TODAS LAS VISTAS (Ya no están comentadas)
+    # VISTAS
     from vistas import login, buscador, updates, inicio, notas, perfil, admin_panel, lab_parser
 
 except ImportError as e:
@@ -36,6 +38,10 @@ if "logged_in" not in st.session_state:
         "user_id": None
     })
 
+# Estado para controlar que la alarma suene solo una vez por sesión
+if "global_alarm_shown" not in st.session_state:
+    st.session_state.global_alarm_shown = False
+
 cookie_manager = stx.CookieManager(key="cordoba_cookies")
 
 # --- 4. Lógica de Reconexión ---
@@ -50,7 +56,6 @@ def intentar_reconexion():
         user_cookie = cookies.get("cordoba_user")
         conn = get_db_connection()
         
-        # Usamos el servicio para validar
         user = auth_service.get_user_by_username(conn, user_cookie)
         
         if user and user.get('active', True):
@@ -72,20 +77,58 @@ def main():
         login.show(cookie_manager)
         return
 
+    # =======================================================
+    # 🚨 SISTEMA DE ALARMA GLOBAL (INYECCIÓN)
+    # =======================================================
+    try:
+        conn = get_db_connection()
+        # 1. Traer noticias y leídos
+        df_upd = updates_service.fetch_updates(conn)
+        reads = updates_service.fetch_read_ids(conn, st.session_state.username)
+        
+        # 2. Filtrar CUALQUIER mensaje no leído
+        if not df_upd.empty:
+            # Obtenemos todos los que NO están en la lista de leídos
+            unread = df_upd[~df_upd['id'].isin(reads)]
+            
+            if not unread.empty:
+                count = len(unread)
+                
+                # 3. Detectar gravedad para elegir el color
+                # Convertimos a mayúsculas para asegurar coincidencia
+                cats = unread['category'].str.strip().str.upper().values
+                
+                if 'CRITICAL' in cats:
+                    # Si hay AL MENOS UN crítico, ponemos alerta ROJA
+                    st.sidebar.error(
+                        f"🔥 **ATENCIÓN**\nTienes {count} avisos pendientes."
+                    )
+                elif 'WARNING' in cats:
+                    # Si hay advertencias, ponemos alerta AMARILLA
+                    st.sidebar.warning(
+                        f"⚠️ **Pendientes**\nTienes {count} avisos sin leer."
+                    )
+                else:
+                    # Si todo es tranquilo (Info/Success), ponemos alerta AZUL
+                    st.sidebar.info(
+                        f"📢 **Novedades**\nTienes {count} mensajes nuevos."
+                    )
+
+    except Exception as e:
+        print(f"Error en alarma global: {e}")
+    # =======================================================
+
     # --- Sidebar y Menú ---
     with st.sidebar:
         st.write("")
         with st.container(border=True):
-            # Icono dinámico según rol
             icono = "🛡️" if st.session_state.role == "Admin" else "👤"
             st.markdown(f"**{icono} {st.session_state.real_name}**")
             st.caption(f"Rol: {st.session_state.role}")
         
         st.markdown("---")
         
-        # --- DEFINICIÓN DE RUTAS POR ROL ---
-        # Aquí es donde recuperamos las vistas perdidas
-        
+        # Rutas
         if st.session_state.role == "Admin":
             rutas = {
                 "🎛️ Admin Panel": admin_panel,
@@ -97,7 +140,6 @@ def main():
                 "⚙️ Parser": lab_parser
             }
         else:
-            # Vistas para Agentes / Usuarios normales
             rutas = {
                 "🏠 Inicio": inicio,
                 "🔍 Buscador": buscador,
@@ -107,26 +149,21 @@ def main():
                 "⚙️ Parser": lab_parser
             }
         
-        # Selector de menú
         opcion = st.radio("Navegación:", list(rutas.keys()), label_visibility="collapsed")
         
         st.markdown("---")
         
-        # Botón de Salir
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
             cookie_manager.delete("cordoba_user")
             st.session_state.clear()
             st.rerun()
 
-    # --- Renderizar Vista Seleccionada ---
+    # --- Renderizar Vista ---
     if opcion in rutas:
-        # Doble verificación de seguridad para Admin
         if opcion == "🎛️ Admin Panel" and st.session_state.role != "Admin":
-            st.error("⛔ Acceso Denegado: Se requieren permisos de Administrador.")
+            st.error("⛔ Acceso Denegado.")
         else:
             rutas[opcion].show()
 
 if __name__ == "__main__":
-
     main()
-
