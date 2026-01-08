@@ -92,7 +92,7 @@ def parse_crm_text(raw_text):
     if lines:
         raw_line = lines[0]
         clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
-        data['raw_name_guess'] = clean_name.strip().lower()
+        data['raw_name_guess'] = clean_name.strip().title()
 
     match_aff_mkt = re.search(r"Affiliate Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
     match_mkt = re.search(r"Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
@@ -385,4 +385,5 @@ def show():
         st.info("No records found for today.")
 
 if __name__ == "__main__":
+
     show()
