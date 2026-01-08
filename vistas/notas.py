@@ -85,24 +85,46 @@ def _inject_copy_button(text_content: str, unique_key: str):
 
 def parse_crm_text(raw_text):
     data = {}
-    match_id = re.search(r"(CORDOBA-\d+)", raw_text)
-    if match_id: data['cordoba_id'] = match_id.group(1)
+    
+    # --- 1. ID EXTRACTION (Prioridad para evitar Co-Applicant) ---
+    # Prioridad A: Buscar explícitamente "Customer ID"
+    match_specific_id = re.search(r"Customer ID\s*(CORDOBA-\d+)", raw_text, re.IGNORECASE)
+    # Prioridad B: Buscar cualquier CORDOBA-XXXX (Fallback)
+    match_any_id = re.search(r"(CORDOBA-\d+)", raw_text)
 
+    if match_specific_id:
+        data['cordoba_id'] = match_specific_id.group(1)
+    elif match_any_id:
+        data['cordoba_id'] = match_any_id.group(1)
+
+    # --- 2. NAME EXTRACTION ---
     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
     if lines:
         raw_line = lines[0]
+        # Limpieza de "Purchaser..." y "Co-Applicant"
         clean_name = re.sub(r"\s*Purchaser\s+\d+\s+Eligible.*", "", raw_line, flags=re.IGNORECASE)
+        clean_name = re.sub(r"Co-Applicant:.*", "", clean_name, flags=re.IGNORECASE)
         data['raw_name_guess'] = clean_name.strip().title()
 
-    match_aff_mkt = re.search(r"Affiliate Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
-    match_mkt = re.search(r"Marketing Company\s*(.*)", raw_text, re.IGNORECASE)
-    if match_aff_mkt and len(match_aff_mkt.group(1).strip()) > 1:
-        data['marketing_company'] = match_aff_mkt.group(1).strip()
-    elif match_mkt and len(match_mkt.group(1).strip()) > 1:
-        data['marketing_company'] = match_mkt.group(1).strip()
+    # --- 3. AFFILIATE EXTRACTION (Jerarquía Actualizada) ---
+    # Orden estricto: Affiliate Mkt > Marketing > Assigned
+    # SE ELIMINÓ "Servicing Company" de la lista.
+    affiliate_patterns = [
+        r"Affiliate Marketing Company\s*(.*)",
+        r"Marketing Company\s*(.*)",
+        r"Assigned Company\s*(.*)" 
+    ]
+
+    for pattern in affiliate_patterns:
+        match = re.search(pattern, raw_text, re.IGNORECASE)
+        if match and len(match.group(1).strip()) > 1:
+            data['marketing_company'] = match.group(1).strip()
+            break # Si encontramos uno, dejamos de buscar
     
+    # --- 4. LANGUAGE ---
     match_lang = re.search(r"Language:\s*(\w+)", raw_text, re.IGNORECASE)
     if match_lang: data['language'] = match_lang.group(1)
+
     return data
 
 def match_affiliate(parsed_affiliate, db_options):
@@ -385,5 +407,4 @@ def show():
         st.info("No records found for today.")
 
 if __name__ == "__main__":
-
     show()
