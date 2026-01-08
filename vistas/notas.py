@@ -22,7 +22,7 @@ TRANSFER_FAIL_REASONS = [
     "Unsuccessful, number was not in service.",
     "Unsuccessful, attempted to contact sales back with no success.",
     "Unsuccessful, the SA was unavailable.",
-    "Unsuccessful, the call was concluded immediately after the verification outcome was completed.",
+    "Unsuccessful, the call was concluded before the verification outcome was completed.",
     "Unsuccessful, the Cx disconnected the call before I could transfer the call back to Sales.",
     "Unsuccessful, the Cx disconnected the call and requested for a call back later.",
     "Unsuccessful, I tried to transfer the client to their representative by calling the company’s extension, but no one answered.",
@@ -438,4 +438,5 @@ def show():
         st.info("No records found for today.")
 
 if __name__ == "__main__":
+
     show()
