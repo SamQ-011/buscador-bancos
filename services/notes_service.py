@@ -39,9 +39,21 @@ def fetch_affiliates_list(conn):
 
 def commit_log(conn, payload: dict):
     comments_safe = sanitize_text_for_db(payload.get('comments', ''))
+    
+    # Extraemos el nuevo campo (default None si no viene)
+    transfer_status = payload.get('transfer_status', None)
+
     sql = """
-        INSERT INTO "Logs" (created_at, user_id, agent, customer, cordoba_id, result, comments, affiliate, info_until, client_language)
-        VALUES (:created_at, :uid, :agent, NULL, :cid, :res, :comm, :aff, :info, :lang)
+        INSERT INTO "Logs" (
+            created_at, user_id, agent, customer, cordoba_id, 
+            result, comments, affiliate, info_until, client_language, 
+            transfer_status
+        )
+        VALUES (
+            :created_at, :uid, :agent, NULL, :cid, 
+            :res, :comm, :aff, :info, :lang, 
+            :trans
+        )
     """
     params = {
         "created_at": datetime.now(pytz.utc), 
@@ -52,8 +64,10 @@ def commit_log(conn, payload: dict):
         "comm": comments_safe,
         "aff": payload['affiliate'],
         "info": payload['info_until'],
-        "lang": payload['client_language']
+        "lang": payload['client_language'],
+        "trans": transfer_status  # <--- Nuevo parámetro
     }
+    
     # Ejecutamos transacción de escritura
     with conn.session as session:
         session.execute(text(sql), params)

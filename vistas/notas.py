@@ -17,7 +17,6 @@ import services.notes_service as note_service
 # 0. CONSTANTES & CONFIGURACIÓN
 # ==============================================================================
 
-# Lista de motivos de fallo en transferencia (Solicitado por el usuario)
 TRANSFER_FAIL_REASONS = [
     "Unsuccessful, number was not in service.",
     "Unsuccessful, attempted to contact sales back with no success.",
@@ -27,7 +26,7 @@ TRANSFER_FAIL_REASONS = [
     "Unsuccessful, the Cx disconnected the call and requested for a call back later.",
     "Unsuccessful, I tried to transfer the client to their representative by calling the company’s extension, but no one answered.",
     "Unsuccessful, I tried to transfer the client to their representative by calling the company’s extension, but it goes straight to voicemail.",
-    "Unsuccesful, the client is busy and will be waiting for their representative’s call."
+    "Unsuccessful, the client is busy and will be waiting for their representative’s call."
 ]
 
 # ==============================================================================
@@ -47,9 +46,6 @@ def _register_successful_save(record_id: str):
     st.session_state.last_save_id = record_id
 
 def _inject_copy_button(text_content: str, unique_key: str):
-    """
-    Botón robusto para copiar (Versión Lab Parser).
-    """
     if not text_content: return
     safe_text = (text_content.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}"))
     
@@ -182,8 +178,6 @@ def recalc_note():
         base_trans = st.session_state.get("lp_trans", "Unsuccessful")
         
         if base_trans == "Unsuccessful":
-            # Si es Unsuccessful, buscamos el motivo detallado en la sesión
-            # Si aún no existe en sesión (primera carga), usamos el primero de la lista
             detailed_reason = st.session_state.get("lp_trans_reason", TRANSFER_FAIL_REASONS[0])
             final_trans_status = detailed_reason
         else:
@@ -191,9 +185,10 @@ def recalc_note():
 
         stat_title = "Returned" if ret == "Yes" else "Not Returned"
         
-        # Construcción final usando el motivo detallado
+        # Nota para Not Completed
         final_note = f"❌ WC Not Completed – {stat_title}\nCX: {name} || {cid}\n\n• Reason: {reason}\n\n• Call Progress: {stage}\n• Transfer Status: {final_trans_status}\nAffiliate: {final_aff}"
     else:
+        # Nota para Completed (SIN INCLUIR LA FUENTE DE INFO)
         final_note = f"✅ WC Completed\nCX: {name} || {cid}\nAffiliate: {final_aff}"
 
     # 5. ACTUALIZAR EL CUADRO DE TEXTO
@@ -291,13 +286,14 @@ def show():
                      key="lp_outcome",
                      on_change=recalc_note)
             
-            # Controles condicionales
+            # --- LÓGICA DE CONTROLES (CONDICIONAL) ---
             if "Not Completed" in st.session_state.lp_outcome:
+                # === CASO: NO COMPLETADO ===
                 st.caption("Call Details:")
                 c1, c2 = st.columns([1.5, 1])
                 with c1:
                     progress_opts = [
-                        "All info provided", "No info provided", "the text message of the VCF", 
+                        "All info provided", "All, info provided by another agent", "No info provided", "the text message of the VCF", 
                         "the contact info verification", "the banking info verification", 
                         "the enrollment plan verification", "the Yes/No verification questions", 
                         "the creditors verification", "the right of offset",
@@ -313,8 +309,7 @@ def show():
                     # Selector de Transferencia
                     st.radio("Transfer?", ["Successful", "Unsuccessful"], horizontal=True, key="lp_trans", on_change=recalc_note)
                 
-                # --- NUEVO: SELECTOR DE RAZONES DE FALLO ---
-                # Solo aparece si seleccionan "Unsuccessful"
+                # Selector de Motivos de Fallo
                 if st.session_state.get("lp_trans") == "Unsuccessful":
                     st.selectbox(
                         "Reason for failed transfer:", 
@@ -324,7 +319,16 @@ def show():
                         help="Select the specific reason why the transfer failed."
                     )
             else:
+                # === CASO: COMPLETADO ===
                 st.success(f"Sale Ready")
+                
+                # --- NUEVO SELECTOR PARA COMPLETADOS ---
+                st.selectbox(
+                    "Who provided all the info?",
+                    ["All info provided", "All, info provided by another agent"],
+                    key="lp_completed_source",
+                    # No agregamos on_change=recalc_note porque no afecta al texto final
+                )
 
         # --- DERECHA: NOTA FINAL Y ACCIONES ---
         with col_right:
@@ -366,6 +370,20 @@ def show():
                     if _is_duplicate_submission(clean_id_num):
                         st.warning(f"⚠️ Duplicate for ID {clean_id_num}")
                     else:
+                        # --- DETERMINAR INFO_UNTIL SEGÚN EL RESULTADO ---
+                        if "Not Completed" in st.session_state.lp_outcome:
+                            final_stage_db = st.session_state.get("lp_stage", "Unknown")
+                            
+                            # Lógica de Transferencia para NO Completados
+                            if st.session_state.get("lp_trans") == "Unsuccessful":
+                                final_transfer_status = st.session_state.get("lp_trans_reason", "Unsuccessful")
+                            else:
+                                final_transfer_status = "Successful" # Opcional: Puedes poner None aquí también si prefieres
+                        else:
+                            # Caso COMPLETED
+                            final_stage_db = st.session_state.get("lp_completed_source", "All info provided")
+                            final_transfer_status = None  # <--- CORRECCIÓN: Vacío si es Completed
+
                         payload = {
                             "user_id": user_id if user_id else 1,
                             "username": username,
@@ -373,10 +391,11 @@ def show():
                             "cordoba_id": clean_id_num,
                             "result": st.session_state.lp_outcome.replace("❌ ", "").replace("✅ ", ""),
                             "affiliate": final_aff,
-                            "info_until": st.session_state.get("lp_stage", "Completed"),
+                            "info_until": final_stage_db,
                             "client_language": parsed_check.get('language', 'Unknown'),
                             "comments": st.session_state.get("lp_reason", ""),
-                            "full_note_content": st.session_state.final_note_content
+                            "full_note_content": st.session_state.final_note_content,
+                            "transfer_status": final_transfer_status # Se guarda lo que definimos arriba
                         }
                         render_confirm_modal(conn, payload)
 
@@ -438,5 +457,4 @@ def show():
         st.info("No records found for today.")
 
 if __name__ == "__main__":
-
     show()
